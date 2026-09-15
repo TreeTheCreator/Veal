@@ -1,0 +1,807 @@
+<title>Veal</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #0c0c0d;
+    --bg-sunk: #070708;
+    --panel: #111112;
+    --panel-2: #19191b;
+    --line: #232326;
+    --line-strong: #323236;
+    --text: #ececef;
+    --text-2: #a4a4ab;
+    --muted: #6f6f77;
+    --accent: #7aa2ff;
+    --accent-ink: #0c0c0d;
+    --agent: #e0563e;
+    --agent-soft: rgba(224, 86, 62, 0.16);
+    --shell: #7aa2ff;
+    --shell-soft: rgba(122, 162, 255, 0.16);
+    --ok: #62c483;
+    --sel: rgba(255, 255, 255, 0.07);
+    --shadow: 0 16px 40px rgba(0,0,0,0.6);
+    --sans: "Geist", "Inter", "Segoe UI", system-ui, sans-serif;
+    --mono: "Geist Mono", "Cascadia Mono", Consolas, monospace;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f4f6; --bg-sunk: #ffffff; --panel: #fafafb; --panel-2: #ececef;
+      --line: #e1e1e5; --line-strong: #cbcbd1; --text: #141416; --text-2: #55555d; --muted: #8a8a92;
+      --accent: #2f62d6; --accent-ink: #ffffff; --agent: #cf4a33; --agent-soft: rgba(207,74,51,0.12);
+      --shell: #2f62d6; --shell-soft: rgba(47,98,214,0.12); --ok: #2f8f52; --sel: rgba(0,0,0,0.06);
+      --shadow: 0 16px 40px rgba(20,20,30,0.18); color-scheme: light;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f4f6; --bg-sunk: #ffffff; --panel: #fafafb; --panel-2: #ececef;
+    --line: #e1e1e5; --line-strong: #cbcbd1; --text: #141416; --text-2: #55555d; --muted: #8a8a92;
+    --accent: #2f62d6; --accent-ink: #ffffff; --agent: #cf4a33; --agent-soft: rgba(207,74,51,0.12);
+    --shell: #2f62d6; --shell-soft: rgba(47,98,214,0.12); --ok: #2f8f52; --sel: rgba(0,0,0,0.06);
+    --shadow: 0 16px 40px rgba(20,20,30,0.18); color-scheme: light;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13.5px/1.45 var(--sans); overflow: hidden; -webkit-font-smoothing: antialiased; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  input, select { font: inherit; color: var(--text); background: var(--bg-sunk); border: 1px solid var(--line-strong); border-radius: 6px; padding: 7px 10px; }
+  .mono { font-family: var(--mono); }
+  svg.i { width: 16px; height: 16px; flex: 0 0 auto; }
+
+  /* ---------- App frame ---------- */
+  .app { display: grid; grid-template-rows: 44px 1fr; grid-template-columns: 236px 1fr; height: 100vh; }
+  .topbar { grid-column: 1 / -1; display: grid; grid-template-columns: 236px 1fr 236px; align-items: center; background: var(--panel); border-bottom: 1px solid var(--line); padding: 0 14px 0 16px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; }
+  .brand svg { width: 20px; height: 20px; color: var(--text); }
+  .brand small { color: var(--muted); font-weight: 400; font-size: 12px; }
+  .tabs { justify-self: center; display: flex; background: var(--bg-sunk); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
+  .tab { padding: 5px 16px; border-radius: 6px; color: var(--text-2); display: flex; align-items: center; gap: 8px; }
+  .tab kbd { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  .tab.active { background: var(--panel-2); color: var(--text); font-weight: 500; }
+  .tab.active kbd { color: var(--text-2); }
+  .topbar-right { justify-self: end; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 11.5px; }
+  .pill { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text-2); }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  .side-head { padding: 14px 16px 8px; font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
+  .side-head .count { font-family: var(--mono); font-size: 11px; }
+  .projects { list-style: none; margin: 0; padding: 0 8px; display: flex; flex-direction: column; gap: 2px; }
+  .project { display: grid; grid-template-columns: 16px 1fr auto auto; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; width: 100%; text-align: left; color: var(--text-2); }
+  .project:hover { background: var(--panel-2); color: var(--text); }
+  .project.active { background: var(--sel); color: var(--text); }
+  .project .name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .project.active .name { font-weight: 500; }
+  .project .path { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: transparent; }
+  .dot.live { background: var(--agent); box-shadow: 0 0 0 3px var(--agent-soft); }
+  .project .spawn { opacity: 0; color: var(--text-2); font-size: 17px; line-height: 1; padding: 1px 5px; border-radius: 5px; }
+  .project:hover .spawn, .project.active .spawn { opacity: 1; }
+  .project .spawn:hover { background: var(--line-strong); color: var(--text); }
+  .add-project { margin: 4px 8px 0; padding: 8px 10px; border-radius: 8px; color: var(--text-2); text-align: left; display: flex; align-items: center; gap: 10px; font-size: 14px; }
+  .add-project:hover { color: var(--text); background: var(--panel-2); }
+  .add-project .plus { width: 16px; text-align: center; font-size: 18px; line-height: 1; }
+  .side-foot { margin-top: auto; border-top: 1px solid var(--line); padding: 8px; }
+  .settings-btn { width: 100%; text-align: left; padding: 8px 10px; border-radius: 8px; display: flex; align-items: center; gap: 10px; color: var(--text-2); font-size: 14px; }
+  .settings-btn:hover { background: var(--panel-2); color: var(--text); }
+  .settings-btn.active { background: var(--sel); color: var(--text); }
+
+  /* ---------- Main ---------- */
+  .main { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
+  .view { display: none; flex: 1; min-height: 0; flex-direction: column; }
+  .view.active { display: flex; }
+  .toolbar { height: 40px; flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 12.5px; color: var(--text-2); }
+  .grow { flex: 1; }
+  .btn { padding: 5px 12px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--panel-2); color: var(--text); display: inline-flex; align-items: center; gap: 7px; font-size: 13px; white-space: nowrap; }
+  .btn:hover { border-color: var(--muted); }
+  .btn.primary { background: var(--text); color: var(--accent-ink); border-color: transparent; font-weight: 500; }
+  .btn.primary:hover { background: var(--text-2); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.ghost { background: none; border-color: transparent; color: var(--text-2); }
+  .btn.ghost:hover { color: var(--text); background: var(--panel-2); }
+  .hint { color: var(--muted); font-size: 12px; }
+
+  /* ---------- Terminal view ---------- */
+  .layout { flex: 1; min-height: 0; padding: 10px; display: flex; }
+  .split { display: flex; flex: 1; min-width: 0; min-height: 0; }
+  .split.row { flex-direction: row; }
+  .split.col { flex-direction: column; }
+  .divider { flex: 0 0 10px; position: relative; z-index: 1; }
+  .split.row > .divider { cursor: col-resize; }
+  .split.col > .divider { cursor: row-resize; }
+  .divider::after { content: ""; position: absolute; background: transparent; border-radius: 2px; transition: background 120ms; }
+  .split.row > .divider::after { top: 10px; bottom: 10px; left: 4px; width: 2px; }
+  .split.col > .divider::after { left: 10px; right: 10px; top: 4px; height: 2px; }
+  .divider:hover::after, .divider.dragging::after { background: var(--accent); }
+  .pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; background: var(--bg-sunk); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; border-left-width: 3px; }
+  .pane.agent { border-left-color: var(--agent); }
+  .pane.shell { border-left-color: var(--shell); }
+  .pane.focused { border-color: var(--line-strong); }
+  .pane.focused.agent { border-left-color: var(--agent); }
+  .pane.focused.shell { border-left-color: var(--shell); }
+  .pane-head { height: 36px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 0 8px 0 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .badge { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; font-weight: 500; }
+  .badge.agent { color: var(--agent); background: var(--agent-soft); }
+  .badge.shell { color: var(--shell); background: var(--shell-soft); }
+  .badge.flip { cursor: pointer; }
+  .badge.flip:hover { box-shadow: 0 0 0 1px currentColor inset; }
+  .pane-head .pname { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+  .pane-head .cwd { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+  .pane-head .close { color: var(--text-2); font-size: 18px; line-height: 1; width: 26px; height: 26px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; }
+  .pane-head .close:hover { background: var(--panel-2); color: var(--text); }
+  .term { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px 50px; font-family: var(--mono); font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; cursor: text; scroll-behavior: smooth; }
+  .term .p, .term .cmd { color: var(--accent); }
+  .term .dim { color: var(--muted); }
+  .term .ag { color: var(--agent); }
+  .term .ok { color: var(--ok); }
+  .term .in { display: inline-flex; align-items: baseline; }
+  .term input { background: none; border: 0; padding: 0; margin: 0; font: inherit; color: var(--accent); width: 60ch; max-width: 100%; caret-color: var(--text); border-radius: 0; }
+  .term input:focus-visible { outline: none; }
+  .to-bottom { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); width: 40px; height: 40px; border-radius: 50%; background: var(--panel-2); border: 1px solid var(--line-strong); display: none; align-items: center; justify-content: center; color: var(--text); box-shadow: var(--shadow); }
+  .to-bottom.show { display: inline-flex; }
+  .to-bottom svg { width: 16px; height: 16px; }
+  .empty-layout { margin: auto; text-align: center; color: var(--muted); line-height: 1.7; }
+
+  /* ---------- Files view ---------- */
+  .files { flex: 1; min-height: 0; display: grid; grid-template-columns: 270px 1fr; }
+  .tree { border-right: 1px solid var(--line); overflow: auto; padding: 10px 8px; background: var(--panel); font-family: var(--mono); font-size: 12.5px; }
+  .tree ul { list-style: none; margin: 0; padding-left: 16px; }
+  .tree > ul { padding-left: 0; }
+  .node { display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: 6px; width: 100%; text-align: left; white-space: nowrap; color: var(--text-2); }
+  .node:hover { background: var(--panel-2); color: var(--text); }
+  .node.open-file { background: var(--sel); color: var(--text); }
+  .node .tw { width: 10px; color: var(--muted); font-size: 9px; display: inline-block; transition: transform 120ms; }
+  .node.dir.collapsed .tw { transform: rotate(-90deg); }
+  .node svg { width: 14px; height: 14px; }
+  li.hidden-branch > ul { display: none; }
+  .viewer { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .viewer-head { height: 36px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 12.5px; color: var(--text-2); background: var(--panel); }
+  .viewer-head b { color: var(--text); font-weight: 500; }
+  .code { flex: 1; min-height: 0; overflow: auto; font-family: var(--mono); font-size: 13px; line-height: 1.65; counter-reset: ln; padding: 12px 0; tab-size: 2; }
+  .code .l { display: flex; }
+  .code .l::before { counter-increment: ln; content: counter(ln); width: 52px; flex: 0 0 52px; text-align: right; padding-right: 18px; color: var(--muted); user-select: none; font-variant-numeric: tabular-nums; }
+  .code .l span.t { white-space: pre; }
+  .k { color: var(--accent); } .s { color: var(--ok); } .c { color: var(--muted); font-style: italic; } .n { color: #e3b34f; } .h { color: var(--text); font-weight: 600; }
+  .viewer-empty { margin: auto; color: var(--muted); text-align: center; line-height: 1.6; }
+
+  /* ---------- Tasks view ---------- */
+  .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 7px; overflow: hidden; }
+  .seg button { padding: 4px 12px; color: var(--text-2); font-size: 12.5px; }
+  .seg button.on { background: var(--panel-2); color: var(--text); }
+  .seg button + button { border-left: 1px solid var(--line-strong); }
+  .storage { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .storage .git { color: var(--ok); }
+  .board { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 12px; align-content: start; }
+  .col-head { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; padding: 0 2px 8px; }
+  .col-head .n { font-family: var(--mono); color: var(--text-2); }
+  .tasks-col { display: flex; flex-direction: column; gap: 8px; }
+  .task { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px 9px; display: grid; gap: 7px; }
+  .task .title { font-size: 13.5px; }
+  .task.done .title { color: var(--muted); text-decoration: line-through; }
+  .task .meta { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
+  .chip { font-family: var(--mono); font-size: 11px; padding: 1px 7px; border-radius: 5px; background: var(--panel-2); border: 1px solid var(--line-strong); color: var(--text-2); }
+  .chip.inbox { border-style: dashed; }
+  .task .acts { margin-left: auto; display: flex; gap: 2px; }
+  .task .acts button { padding: 1px 7px; border-radius: 5px; color: var(--text-2); }
+  .task .acts button:hover { background: var(--panel-2); color: var(--text); }
+  .add-task { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--panel); }
+  .add-task input[type=text] { flex: 1; }
+
+  /* ---------- Settings ---------- */
+  .settings-view .sheet { max-width: 580px; margin: 8px 24px; display: grid; }
+  .srow { display: grid; grid-template-columns: 210px 1fr; gap: 16px; align-items: center; padding: 13px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .srow .lbl b { display: block; font-weight: 500; color: var(--text); }
+  .srow .lbl span { color: var(--muted); font-size: 12px; }
+
+  /* ---------- Overlays ---------- */
+  .scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: none; align-items: center; justify-content: center; z-index: 20; }
+  .scrim.open { display: flex; }
+  .modal { width: 440px; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--shadow); padding: 22px; display: grid; gap: 14px; }
+  .modal h3 { margin: 0; font-size: 16px; font-weight: 600; }
+  .field { display: grid; gap: 6px; font-size: 12.5px; color: var(--text-2); }
+  .field small { color: var(--muted); font-size: 11.5px; }
+  .field input, .field select { width: 100%; }
+  .row { display: flex; gap: 8px; justify-content: flex-end; }
+  .popover { position: absolute; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); padding: 6px; display: none; z-index: 15; min-width: 240px; }
+  .popover.open { display: grid; gap: 2px; }
+  .popover .opt { display: grid; grid-template-columns: 8px 1fr; gap: 12px; align-items: center; padding: 8px 10px; border-radius: 7px; text-align: left; }
+  .popover .opt:hover { background: var(--panel-2); }
+  .popover .opt .sw { width: 8px; height: 24px; border-radius: 3px; }
+  .popover .opt b { font-weight: 500; display: block; }
+  .popover .opt small { color: var(--muted); }
+  .popover .ttl { font-size: 11px; color: var(--muted); padding: 5px 10px 3px; }
+  .toast { position: fixed; left: 50%; bottom: 20px; transform: translate(-50%, 8px); background: var(--panel-2); border: 1px solid var(--line-strong); border-radius: 8px; padding: 8px 14px; box-shadow: var(--shadow); font-size: 12.5px; opacity: 0; transition: opacity 160ms, transform 160ms; pointer-events: none; z-index: 30; }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-term" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9l3 3-3 3M13 15h4"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16M5 13l7 7 7-7"/></symbol>
+</svg>
+
+<div class="app">
+  <div class="topbar">
+    <div class="brand"><svg><use href="#i-term"/></svg>veal <small>0.1</small></div>
+    <div class="tabs" role="tablist">
+      <button class="tab active" role="tab" data-view="terminal">Terminal <kbd>⌃1</kbd></button>
+      <button class="tab" role="tab" data-view="files">Files <kbd>⌃2</kbd></button>
+      <button class="tab" role="tab" data-view="tasks">Tasks <kbd>⌃3</kbd></button>
+    </div>
+    <div class="topbar-right"><span id="paneCount" class="mono"></span><span class="pill">clickable mockup</span></div>
+  </div>
+
+  <aside class="sidebar">
+    <div class="side-head"><span>Pinned projects</span><span class="count" id="projCount"></span></div>
+    <ul class="projects" id="projects"></ul>
+    <button class="add-project" id="addProjectBtn"><span class="plus">+</span>Add project</button>
+    <div class="side-foot"><button class="settings-btn" id="settingsBtn"><svg class="i"><use href="#i-gear"/></svg>Settings</button></div>
+  </aside>
+
+  <main class="main">
+    <section class="view active" id="view-terminal">
+      <div class="toolbar">
+        <button class="btn primary" id="newPaneBtn">+ New terminal</button>
+        <span class="hint" id="newPaneHint"></span>
+        <span class="grow"></span>
+        <span class="hint">Drag the dividers to resize · click a badge to flip agent ⇄ shell</span>
+      </div>
+      <div class="layout" id="layout"></div>
+    </section>
+
+    <section class="view" id="view-files">
+      <div class="toolbar"><span>Root</span><span class="mono" id="filesRoot" style="color:var(--text)"></span><span class="grow"></span><span class="hint">Read-only · CodeMirror viewer</span></div>
+      <div class="files">
+        <div class="tree" id="tree"></div>
+        <div class="viewer" id="viewer"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-tasks">
+      <div class="toolbar">
+        <div class="seg" id="scopeSeg"><button data-scope="project" class="on">This project</button><button data-scope="global">All projects</button></div>
+        <span class="storage" id="storageNote"></span>
+        <span class="grow"></span>
+        <span class="hint">▸ moves a task forward</span>
+      </div>
+      <div class="board" id="board"></div>
+      <form class="add-task" id="addTaskForm">
+        <input type="text" id="taskTitle" placeholder="New task…" autocomplete="off">
+        <select id="taskProject"></select>
+        <button class="btn" type="submit">Add</button>
+      </form>
+    </section>
+
+    <section class="view settings-view" id="view-settings">
+      <div class="toolbar"><span style="color:var(--text)">Settings</span><span class="grow"></span><span class="hint">Saved to veal.db</span></div>
+      <div class="sheet">
+        <div class="srow"><div class="lbl"><b>Appearance</b><span>Follows the OS unless set here</span></div>
+          <div class="seg" id="themeSeg"><button data-t="system" class="on">System</button><button data-t="dark">Dark</button><button data-t="light">Light</button></div></div>
+        <div class="srow"><div class="lbl"><b>Default pane type</b><span>Preselected when you open a new terminal</span></div>
+          <div class="seg" id="defaultTypeSeg"><button data-k="shell" class="on">Shell</button><button data-k="agent">Agent</button></div></div>
+        <div class="srow"><div class="lbl"><b>Shell</b><span>Launched in every new pane</span></div>
+          <select id="shellSel"><option>pwsh</option><option>cmd</option><option>bash (WSL)</option></select></div>
+        <div class="srow"><div class="lbl"><b>New projects go in</b><span>Used when you leave the root directory blank</span></div>
+          <span class="mono" id="homeDir"></span></div>
+        <div class="srow"><div class="lbl"><b>Pane soft cap</b><span>New terminal is disabled past this</span></div><span class="mono">4</span></div>
+        <div class="srow"><div class="lbl"><b>Task files</b><span>Per-project source of truth, git-trackable</span></div><span class="mono">.veal/tasks.json</span></div>
+        <div class="srow" style="border:0"><div class="lbl"><b>Restore layout on launch</b><span>Reopens panes, cwds and weights</span></div><label><input type="checkbox" checked> Enabled</label></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="popover" id="typePopover">
+  <div class="ttl">New terminal in <span id="popProject" class="mono"></span></div>
+  <button class="opt" data-kind="shell"><span class="sw" style="background:var(--shell)"></span><span><b>Shell</b><small>pwsh in the project root</small></span></button>
+  <button class="opt" data-kind="agent"><span class="sw" style="background:var(--agent)"></span><span><b>Agent</b><small>Same PTY — you launch claude, aider, etc.</small></span></button>
+</div>
+
+<div class="scrim" id="addProjectModal">
+  <form class="modal" id="addProjectForm">
+    <h3>Add project</h3>
+    <label class="field">Name<input type="text" id="newName" placeholder="my-project" autocomplete="off"></label>
+    <label class="field">Root directory <span style="color:var(--muted)">(optional)</span>
+      <input type="text" id="newPath" class="mono" autocomplete="off">
+      <small id="pathHint"></small></label>
+    <div class="row"><button class="btn ghost" type="button" id="cancelAdd">Cancel</button><button class="btn primary" type="submit">Pin project</button></div>
+  </form>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ---------- Data ----------
+const CAP = 4;
+const HOME = 'C:\\Users\\user';
+const state = {
+  view: 'terminal', active: 'veal', defaultKind: 'shell', scope: 'project',
+  projects: [
+    { id: 'veal', name: 'veal', path: HOME + '\\veal' },
+    { id: 'hungy', name: 'hungy-games', path: HOME + '\\hungy-games' },
+    { id: 'agility', name: 'agility-reels', path: HOME + '\\agility' },
+  ],
+  layout: null, focused: null, openFile: null,
+  tasks: [
+    { id: 1, title: 'Split-tree layout model with flex weights', project: 'veal', status: 'doing' },
+    { id: 2, title: 'Resize PTY when a divider is dragged', project: 'veal', status: 'todo' },
+    { id: 3, title: 'Sidebar live-agent dot', project: 'veal', status: 'done' },
+    { id: 4, title: 'Restore layout from SQLite on launch', project: 'veal', status: 'todo' },
+    { id: 5, title: 'Zone shrink schedule — tune phase 3 timings', project: 'hungy', status: 'todo' },
+    { id: 6, title: 'Landmark seed table for playtests', project: 'hungy', status: 'done' },
+    { id: 7, title: 'Renew domain before the 30th', project: null, status: 'todo' },
+    { id: 8, title: 'Read Tauri 2 IPC channel docs', project: null, status: 'done' },
+    { id: 9, title: 'Script 4 voiceover — final pass', project: 'agility', status: 'doing' },
+  ],
+};
+let nextTask = 10, nextPane = 1;
+const proj = (id) => state.projects.find(p => p.id === id);
+const tilde = (path) => path.startsWith(HOME) ? '~' + path.slice(HOME.length).replace(/\\/g, '/') : path;
+const esc = (s) => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+const SESSIONS = {
+  agent: [
+    `<span class="p">$</span> <span class="cmd">claude</span>`,
+    `Reading <span class="dim">src/layout/tree.ts</span>`,
+    `Editing <span class="dim">src/layout/tree.ts</span> (+48 −6)`,
+    `running tests...`,
+    `<span class="ok">✓</span> 12 passed`,
+    `Done. Each split child now carries a flex weight.`,
+  ],
+  shell: [
+    `<span class="p">$</span> <span class="cmd">git status</span>`,
+    `On branch main`,
+    `<span class="dim">3 files changed</span>`,
+  ],
+  dev: [
+    `<span class="p">$</span> <span class="cmd">npm run dev</span>`,
+    `server listening on <span class="dim">:1420</span>`,
+    `<span class="dim">watching for changes...</span>`,
+  ],
+};
+function pane(kind, projectId, session) {
+  return { type: 'pane', id: 'p' + (nextPane++), kind, project: projectId, cwd: proj(projectId).path, lines: [...(SESSIONS[session || kind])] };
+}
+state.layout = { type: 'split', dir: 'row', weights: [1, 1], children: [
+  { type: 'split', dir: 'col', weights: [1, 1], children: [ pane('shell', 'veal', 'dev'), pane('shell', 'veal') ] },
+  pane('agent', 'hungy'),
+]};
+state.focused = state.layout.children[0].children[0].id;
+
+// ---------- Layout tree ops ----------
+function panes(node = state.layout, out = []) {
+  if (!node) return out;
+  if (node.type === 'pane') out.push(node); else if (node.type === 'split') node.children.forEach(c => panes(c, out));
+  return out;
+}
+// Inserts `np` where the next pane goes: fill the root row to 2, then split the root child with the fewest panes.
+function insert(root, np) {
+  if (!root) return np;
+  if (root.type !== 'split') return { type: 'split', dir: 'row', weights: [1, 1], children: [root, np] };
+  if (root.children.length < 2) { root.children.push(np); root.weights.push(1); return root; }
+  let idx = 0, best = Infinity;
+  root.children.forEach((c, i) => { const n = panes(c).length; if (n < best) { best = n; idx = i; } });
+  const t = root.children[idx];
+  if (t.type === 'split') { t.children.push(np); t.weights.push(1); }
+  else root.children[idx] = { type: 'split', dir: 'col', weights: [1, 1], children: [t, np] };
+  return root;
+}
+function addPane(kind, projectId) {
+  if (panes().length >= CAP) return toast(`Soft cap of ${CAP} panes reached — close one first`);
+  const np = pane(kind, projectId);
+  state.layout = insert(state.layout, np);
+  state.focused = np.id;
+  renderAll();
+  toast(`${kind === 'agent' ? 'Agent' : 'Shell'} pane opened in ${tilde(proj(projectId).path)}`);
+}
+function closePane(id) {
+  function prune(node) {
+    if (node.type === 'pane') return node.id === id ? null : node;
+    const kept = [], w = [];
+    node.children.forEach((c, i) => { const r = prune(c); if (r) { kept.push(r); w.push(node.weights[i]); } });
+    if (kept.length === 0) return null;
+    if (kept.length === 1) return kept[0];
+    node.children = kept; node.weights = w; return node;
+  }
+  state.layout = prune(state.layout);
+  if (state.focused === id) state.focused = panes()[0]?.id ?? null;
+  renderAll();
+}
+function flipKind(id) { const p = panes().find(p => p.id === id); p.kind = p.kind === 'agent' ? 'shell' : 'agent'; renderAll(); }
+const liveAgent = (projectId) => panes().some(p => p.kind === 'agent' && p.project === projectId);
+
+// ---------- Render: terminal ----------
+const $ = (s, r = document) => r.querySelector(s);
+const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
+
+function renderLayout() {
+  const host = $('#layout'); host.innerHTML = '';
+  const n = panes().length;
+  $('#paneCount').textContent = `${n}/${CAP} panes`;
+  $('#newPaneBtn').disabled = n >= CAP;
+  $('#newPaneHint').textContent = n >= CAP ? `Soft cap of ${CAP} reached` : `Opens in ${tilde(proj(state.active).path)}`;
+  if (!state.layout) { host.append(el('div', 'empty-layout', `No panes open.<br><span class="hint">New terminal spawns a PTY in ${esc(tilde(proj(state.active).path))}</span>`)); return; }
+  host.append(buildNode(state.layout));
+  const f = $(`[data-pane="${state.focused}"] input`); if (f && state.view === 'terminal') f.focus({ preventScroll: true });
+}
+function buildNode(node) {
+  if (node.type === 'pane') return buildPane(node);
+  const s = el('div', `split ${node.dir}`);
+  node.children.forEach((c, i) => {
+    const child = buildNode(c); child.style.flex = `${node.weights[i]} 1 0px`; s.append(child);
+    if (i < node.children.length - 1) s.append(buildDivider(node, i, s));
+  });
+  return s;
+}
+function buildDivider(node, i, container) {
+  const d = el('div', 'divider');
+  d.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); d.setPointerCapture(e.pointerId); d.classList.add('dragging');
+    const horiz = node.dir === 'row';
+    const rect = container.getBoundingClientRect();
+    const size = horiz ? rect.width : rect.height;
+    const total = node.weights.reduce((a, b) => a + b, 0);
+    const start = horiz ? e.clientX : e.clientY;
+    const w0 = node.weights[i], w1 = node.weights[i + 1], pair = w0 + w1;
+    const kids = [...container.children].filter(c => !c.classList.contains('divider'));
+    const move = (ev) => {
+      const delta = ((horiz ? ev.clientX : ev.clientY) - start) / size * total;
+      const a = Math.max(pair * 0.15, Math.min(pair * 0.85, w0 + delta));
+      node.weights[i] = a; node.weights[i + 1] = pair - a;
+      kids[i].style.flex = `${a} 1 0px`; kids[i + 1].style.flex = `${pair - a} 1 0px`;
+    };
+    const up = () => { d.classList.remove('dragging'); d.removeEventListener('pointermove', move); d.removeEventListener('pointerup', up); };
+    d.addEventListener('pointermove', move); d.addEventListener('pointerup', up);
+  });
+  return d;
+}
+function buildPane(p) {
+  const pr = proj(p.project);
+  const box = el('div', `pane ${p.kind}${p.id === state.focused ? ' focused' : ''}`);
+  box.dataset.pane = p.id;
+  const head = el('div', 'pane-head');
+  const badge = el('button', `badge flip ${p.kind}`, p.kind); badge.title = 'Flip pane type'; badge.onclick = () => flipKind(p.id);
+  const cwd = el('span', 'cwd', tilde(p.cwd));
+  const close = el('button', 'close', '×'); close.title = 'Close pane'; close.onclick = (e) => { e.stopPropagation(); closePane(p.id); };
+  head.append(badge, el('span', 'pname', esc(pr.name)), cwd, close);
+  const term = el('div', 'term');
+  const out = el('div', 'out', p.lines.join('\n'));
+  const inRow = el('div', 'in', `<span class="p">$</span>&nbsp;`);
+  const input = el('input'); input.spellcheck = false; input.setAttribute('aria-label', 'terminal input');
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { runCommand(p, input.value, out); input.value = ''; term.scrollTop = term.scrollHeight; } });
+  inRow.append(input); term.append(out, inRow);
+  term.onclick = () => input.focus();
+  const down = el('button', 'to-bottom', '<svg><use href="#i-down"/></svg>'); down.title = 'Scroll to bottom';
+  down.onclick = () => { term.scrollTop = term.scrollHeight; };
+  term.addEventListener('scroll', () => down.classList.toggle('show', term.scrollHeight - term.scrollTop - term.clientHeight > 40));
+  box.addEventListener('pointerdown', () => { if (state.focused !== p.id) { state.focused = p.id; document.querySelectorAll('.pane').forEach(x => x.classList.toggle('focused', x.dataset.pane === p.id)); } });
+  box.append(head, term, down);
+  return box;
+}
+function runCommand(p, raw, out) {
+  const cmd = raw.trim(); const pr = proj(p.project);
+  const push = (...ls) => { p.lines.push(...ls); out.innerHTML = p.lines.join('\n'); };
+  if (!cmd) return push(`<span class="p">$</span>`);
+  push(`<span class="p">$</span> <span class="cmd">${esc(cmd)}</span>`);
+  const [name, ...args] = cmd.split(/\s+/);
+  if (p.kind === 'agent') return push(`<span class="dim">(mock)</span> I would work on “${esc(cmd)}” in ${esc(pr.name)}.`);
+  switch (name.toLowerCase()) {
+    case 'clear': case 'cls': p.lines = []; out.innerHTML = ''; return;
+    case 'pwd': return push(p.cwd);
+    case 'ls': case 'dir': return push(FS[p.project].map(n => n.name + (n.children ? '/' : '')).join('  '));
+    case 'git': return push(args[0] === 'status' ? 'On branch main\n<span class="dim">3 files changed</span>' : `<span class="dim">git ${esc(args.join(' '))} — ok</span>`);
+    case 'npm': case 'pnpm': case 'cargo': return push(`<span class="dim">${esc(cmd)} — running…</span>`);
+    case 'claude': case 'aider': case 'codex': case 'gemini':
+      return push(`<span class="dim">Launching ${esc(name)} in ${tilde(p.cwd)}. The pane is still tagged</span> <span class="badge ${p.kind}">${p.kind}</span><span class="dim"> — click the badge to relabel it.</span>`, `${esc(name)} ready. <span class="dim">Type a request.</span>`);
+    case 'exit': return closePane(p.id);
+    default: return push(`<span class="ag">${esc(name)}</span>: not recognized <span class="dim">(mock shell — try ls, pwd, git status, npm run dev, claude, clear)</span>`);
+  }
+}
+
+// ---------- Render: sidebar ----------
+function renderSidebar() {
+  const ul = $('#projects'); ul.innerHTML = '';
+  $('#projCount').textContent = state.projects.length;
+  state.projects.forEach(p => {
+    const li = el('li');
+    const b = el('button', `project${p.id === state.active ? ' active' : ''}`);
+    const live = liveAgent(p.id);
+    b.innerHTML = `<svg class="i"><use href="#i-folder"/></svg>
+      <span style="min-width:0"><div class="name">${esc(p.name)}</div><div class="path">${esc(tilde(p.path))}</div></span>
+      <span class="dot${live ? ' live' : ''}" title="${live ? 'Agent running' : ''}"></span>
+      <span class="spawn" role="button" title="New terminal here" tabindex="0">+</span>`;
+    b.onclick = (e) => {
+      state.active = p.id; renderAll();
+      if (e.target.classList.contains('spawn')) openTypePopover(e.target, p.id);
+    };
+    li.append(b); ul.append(li);
+  });
+  const sel = $('#taskProject'); const cur = sel.value;
+  sel.innerHTML = `<option value="">Inbox (no project)</option>` + state.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  sel.value = cur || state.active;
+}
+
+// ---------- Files ----------
+const FS = {
+  veal: [
+    { name: 'src-tauri', children: [
+      { name: 'src', children: [ { name: 'main.rs', lang: 'rs' }, { name: 'pty.rs', lang: 'rs' }, { name: 'db.rs', lang: 'rs' } ] },
+      { name: 'Cargo.toml', lang: 'toml' }, { name: 'tauri.conf.json', lang: 'json' } ] },
+    { name: 'src', children: [ { name: 'App.tsx', lang: 'ts' }, { name: 'store.ts', lang: 'ts' },
+      { name: 'layout', children: [ { name: 'tree.ts', lang: 'ts' }, { name: 'SplitView.tsx', lang: 'ts' } ] },
+      { name: 'views', children: [ { name: 'Terminal.tsx', lang: 'ts' }, { name: 'Files.tsx', lang: 'ts' }, { name: 'Tasks.tsx', lang: 'ts' } ] } ] },
+    { name: '.veal', children: [ { name: 'tasks.json', lang: 'json' } ] },
+    { name: 'mockup', children: [ { name: 'index.html', lang: 'html' } ] },
+    { name: 'package.json', lang: 'json' }, { name: 'veal-spec.md', lang: 'md' },
+  ],
+  hungy: [
+    { name: 'src', children: [ { name: 'game.js', lang: 'ts' }, { name: 'zones.js', lang: 'ts' }, { name: 'seed.js', lang: 'ts' } ] },
+    { name: '.veal', children: [ { name: 'tasks.json', lang: 'json' } ] },
+    { name: 'index.html', lang: 'html' }, { name: 'README.md', lang: 'md' },
+  ],
+  agility: [
+    { name: 'scripts', children: [ { name: 'script-3.md', lang: 'md' }, { name: 'script-4.md', lang: 'md' } ] },
+    { name: 'notes.md', lang: 'md' },
+  ],
+};
+const FILES = {
+  'veal/src/layout/tree.ts': `export type Node = Pane | Split;
+export interface Pane { type: 'pane'; id: string; kind: 'agent' | 'shell'; cwd: string; }
+export interface Split { type: 'split'; dir: 'row' | 'col'; weights: number[]; children: Node[]; }
+
+export const SOFT_CAP = 4;
+
+// Weights are relative, not pixels — a divider drag moves weight between two neighbours.
+export function shiftWeight(split: Split, i: number, delta: number): Split {
+  const pair = split.weights[i] + split.weights[i + 1];
+  const a = clamp(split.weights[i] + delta, pair * 0.15, pair * 0.85);
+  const weights = [...split.weights];
+  weights[i] = a; weights[i + 1] = pair - a;
+  return { ...split, weights };
+}
+
+export function remove(node: Node, id: string): Node | null {
+  if (node.type === 'pane') return node.id === id ? null : node;
+  const kept = node.children.map(c => remove(c, id)).filter(Boolean) as Node[];
+  if (kept.length === 0) return null;
+  if (kept.length === 1) return kept[0];
+  return { ...node, children: kept };
+}
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));`,
+  'veal/src-tauri/src/pty.rs': `use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use std::collections::HashMap;
+
+pub struct PaneProc { pub id: String, pub cwd: String, master: Box<dyn portable_pty::MasterPty + Send> }
+
+#[tauri::command]
+pub fn spawn_pane(id: String, cwd: String, shell: String, cols: u16, rows: u16) -> Result<(), String> {
+    let pty = native_pty_system();
+    let pair = pty.openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
+    let mut cmd = CommandBuilder::new(shell);
+    cmd.cwd(&cwd); // every pane remembers its own cwd — no global "active project"
+    pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    PANES.lock().unwrap().insert(id.clone(), PaneProc { id, cwd, master: pair.master });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn resize_pane(id: String, cols: u16, rows: u16) -> Result<(), String> {
+    let panes = PANES.lock().unwrap();
+    let p = panes.get(&id).ok_or("no such pane")?;
+    p.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())
+}`,
+  'veal/.veal/tasks.json': `{
+  "version": 1,
+  "tasks": [
+    { "id": "t1", "title": "Split-tree layout model with flex weights", "status": "doing", "created": "2026-09-15" },
+    { "id": "t2", "title": "Resize PTY when a divider is dragged", "status": "todo", "created": "2026-09-15" },
+    { "id": "t3", "title": "Sidebar live-agent dot", "status": "done", "created": "2026-09-14" },
+    { "id": "t4", "title": "Restore layout from SQLite on launch", "status": "todo", "created": "2026-09-15" }
+  ]
+}`,
+  'veal/veal-spec.md': `# Veal — dev environment spec
+
+A desktop app combining a flexible terminal multiplexer, file viewer, and task
+manager, built for agentic engineering and daily dev work.
+
+## Stack
+
+- **Shell**: Tauri (Rust backend + system webview, not Electron)
+- **Frontend**: xterm.js for terminal rendering
+- **Backend (Rust)**: \`portable-pty\` for spawning real PTY processes
+- **Persistence**: local SQLite — pinned projects, tasks cache, pane layout
+
+## Decisions (2026-09-15)
+
+- Pane soft cap: **4**
+- Pane type is **manual**; any agent CLI can be launched inside any pane
+- Tasks: \`.veal/tasks.json\` per project is the source of truth, SQLite caches; non-project tasks go to an Inbox in SQLite
+- Files view: read-only to start
+- New projects default to \`C:\\Users\\user\\<name>\` when no root is given`,
+  'veal/package.json': `{
+  "name": "veal",
+  "version": "0.1.0",
+  "scripts": { "dev": "tauri dev", "build": "tauri build", "test": "vitest" },
+  "dependencies": { "@tauri-apps/api": "^2.4.0", "react": "^19.1.0", "xterm": "^5.5.0", "@codemirror/view": "^6.36.0", "zustand": "^5.0.3" }
+}`,
+  'hungy/src/zones.js': `// Zone shrink schedule — phase, delay (s), shrink duration (s), radius fraction
+export const ZONES = [
+  { phase: 1, delay: 120, shrink: 60, radius: 0.70 },
+  { phase: 2, delay: 90,  shrink: 45, radius: 0.45 },
+  { phase: 3, delay: 60,  shrink: 30, radius: 0.25 },
+  { phase: 4, delay: 45,  shrink: 20, radius: 0.08 },
+];`,
+  'agility/scripts/script-4.md': `# Script 4 — E30 at dawn
+
+**Beat 1** — cold engine, breath in the air. No voice.
+**Beat 2** — VO: "You don't drive this car. You negotiate with it."
+**Beat 3** — third gear, the road opens. Music drops out.
+**Ending** — wordless. Tail lights, then black.`,
+};
+function renderTree() {
+  const p = proj(state.active); $('#filesRoot').textContent = tilde(p.path);
+  const host = $('#tree'); host.innerHTML = '';
+  const build = (nodes, chain) => {
+    const ul = el('ul');
+    nodes.forEach(n => {
+      const li = el('li'); const c = [...chain, n.name];
+      if (n.children) {
+        const b = el('button', 'node dir', `<span class="tw">▼</span><svg><use href="#i-folder"/></svg>${esc(n.name)}`);
+        b.onclick = () => { li.classList.toggle('hidden-branch'); b.classList.toggle('collapsed'); };
+        li.append(b, build(n.children, c));
+      } else {
+        const key = `${state.active}/${c.join('/')}`;
+        const b = el('button', `node file${state.openFile === key ? ' open-file' : ''}`, `<span class="tw"></span><svg><use href="#i-file"/></svg>${esc(n.name)}`);
+        b.onclick = () => { state.openFile = key; renderTree(); renderViewer(n.lang); };
+        li.append(b);
+      }
+      ul.append(li);
+    });
+    return ul;
+  };
+  host.append(build(FS[state.active] || [], []));
+}
+function renderViewer(lang) {
+  const v = $('#viewer'); v.innerHTML = '';
+  const key = state.openFile;
+  if (!key || !key.startsWith(state.active + '/')) { v.append(el('div', 'viewer-empty', 'Pick a file from the tree.<br><span style="font-size:12px">Opens read-only in CodeMirror; editing comes later.</span>')); return; }
+  const rel = key.slice(state.active.length + 1);
+  const src = FILES[key];
+  const head = el('div', 'viewer-head', `<span>${esc(proj(state.active).name)} / <b>${esc(rel)}</b></span><span class="grow"></span><span class="pill">read-only</span>`);
+  const code = el('div', 'code');
+  if (src == null) code.innerHTML = `<div class="l"><span class="t c">// (mock) no sample contents for ${esc(rel)}</span></div>`;
+  else code.innerHTML = src.split('\n').map(l => `<div class="l"><span class="t">${hl(esc(l), lang || rel.split('.').pop())}</span></div>`).join('');
+  v.append(head, code);
+}
+function hl(line, lang) {
+  if (lang === 'md') return line.replace(/^(#+ .*)$/, '<span class="h">$1</span>').replace(/\*\*(.+?)\*\*/g, '<span class="k">$1</span>').replace(/`([^`]+)`/g, '<span class="s">`$1`</span>');
+  if (lang === 'json') return line.replace(/"([^"]+)"(?=:)/g, '<span class="k">"$1"</span>').replace(/: "([^"]*)"/g, ': <span class="s">"$1"</span>').replace(/\b(\d+|true|false)\b/g, '<span class="n">$1</span>');
+  const kw = lang === 'rs' ? 'use|pub|fn|let|mut|struct|impl|match|Result|Ok|Err|dyn|Box|String|u16|Send'
+           : 'export|import|from|const|let|type|interface|function|return|if|as|number|string|boolean';
+  return line
+    .replace(/(\/\/.*)$/, '<span class="c">$1</span>')
+    .replace(/('[^']*'|"[^"]*")/g, '<span class="s">$1</span>')
+    .replace(new RegExp(`\\b(${kw})\\b`, 'g'), '<span class="k">$1</span>')
+    .replace(/#\[(\w+::\w+)\]/g, '<span class="n">#[$1]</span>')
+    .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="n">$1</span>');
+}
+
+// ---------- Tasks ----------
+const STATUS = [['todo', 'To do'], ['doing', 'In progress'], ['done', 'Done']];
+function renderTasks() {
+  const p = proj(state.active);
+  document.querySelectorAll('#scopeSeg button').forEach(b => b.classList.toggle('on', b.dataset.scope === state.scope));
+  $('#scopeSeg [data-scope=project]').textContent = p.name;
+  $('#storageNote').innerHTML = state.scope === 'project'
+    ? `${esc(tilde(p.path))}/.veal/tasks.json <span class="git">· git-tracked</span>`
+    : `${state.projects.length} project files + Inbox · indexed in veal.db`;
+  const list = state.tasks.filter(t => state.scope === 'global' || t.project === state.active);
+  const board = $('#board'); board.innerHTML = '';
+  STATUS.forEach(([st, label]) => {
+    const col = el('div', 'tasks-col');
+    const items = list.filter(t => t.status === st);
+    col.append(el('div', 'col-head', `<span>${label}</span><span class="n">${items.length}</span>`));
+    items.forEach(t => {
+      const card = el('div', `task${t.status === 'done' ? ' done' : ''}`);
+      const chip = t.project ? `<span class="chip">${esc(proj(t.project).name)}</span>` : `<span class="chip inbox">Inbox · SQLite</span>`;
+      const fwd = t.status !== 'done' ? `<button title="Move forward" data-act="fwd">▸</button>` : `<button title="Reopen" data-act="reopen">↺</button>`;
+      card.innerHTML = `<div class="title">${esc(t.title)}</div><div class="meta">${state.scope === 'global' || !t.project ? chip : ''}<span class="acts">${fwd}<button title="Delete" data-act="del">×</button></span></div>`;
+      card.querySelector('[data-act=fwd]')?.addEventListener('click', () => { t.status = t.status === 'todo' ? 'doing' : 'done'; renderTasks(); });
+      card.querySelector('[data-act=reopen]')?.addEventListener('click', () => { t.status = 'todo'; renderTasks(); });
+      card.querySelector('[data-act=del]').addEventListener('click', () => { state.tasks = state.tasks.filter(x => x !== t); renderTasks(); });
+      col.append(card);
+    });
+    board.append(col);
+  });
+  if (state.scope === 'project') $('#taskProject').value = state.active;
+}
+$('#scopeSeg').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) { state.scope = b.dataset.scope; renderTasks(); } });
+$('#addTaskForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const title = $('#taskTitle').value.trim(); if (!title) return;
+  const project = $('#taskProject').value || null;
+  state.tasks.push({ id: nextTask++, title, project, status: 'todo' });
+  $('#taskTitle').value = '';
+  if (project && project !== state.active && state.scope === 'project') state.scope = 'global';
+  renderTasks();
+  toast(project ? `Written to ${tilde(proj(project).path)}/.veal/tasks.json` : 'Saved to Inbox (veal.db)');
+});
+
+// ---------- Views ----------
+function setView(v) {
+  state.view = v;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
+  document.querySelectorAll('.view').forEach(s => s.classList.toggle('active', s.id === 'view-' + v));
+  $('#settingsBtn').classList.toggle('active', v === 'settings');
+  if (v === 'files') { renderTree(); renderViewer(); }
+  if (v === 'tasks') renderTasks();
+  if (v === 'terminal') { const f = $(`[data-pane="${state.focused}"] input`); f && f.focus({ preventScroll: true }); }
+}
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => setView(t.dataset.view));
+$('#settingsBtn').onclick = () => setView('settings');
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && ['1', '2', '3'].includes(e.key)) { e.preventDefault(); setView(['terminal', 'files', 'tasks'][+e.key - 1]); }
+  if (e.key === 'Escape') { closePopover(); $('#addProjectModal').classList.remove('open'); }
+});
+function renderAll() { renderSidebar(); renderLayout(); if (state.view === 'files') { renderTree(); renderViewer(); } if (state.view === 'tasks') renderTasks(); }
+
+// ---------- New pane popover ----------
+const pop = $('#typePopover'); let popProject = null;
+function openTypePopover(anchor, projectId) {
+  popProject = projectId; $('#popProject').textContent = tilde(proj(projectId).path);
+  const r = anchor.getBoundingClientRect();
+  pop.classList.add('open');
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  let left = Math.min(r.left, window.innerWidth - w - 10), top = r.bottom + 6;
+  if (top + h > window.innerHeight - 10) top = r.top - h - 6;
+  pop.style.left = left + 'px'; pop.style.top = top + 'px';
+  pop.querySelector(`[data-kind="${state.defaultKind}"]`).focus();
+}
+function closePopover() { pop.classList.remove('open'); }
+pop.querySelectorAll('.opt').forEach(o => o.onclick = () => { closePopover(); addPane(o.dataset.kind, popProject); });
+document.addEventListener('pointerdown', (e) => { if (pop.classList.contains('open') && !e.target.closest('#typePopover, #newPaneBtn, .spawn')) closePopover(); });
+$('#newPaneBtn').onclick = (e) => { if (state.view !== 'terminal') setView('terminal'); openTypePopover(e.currentTarget, state.active); };
+
+// ---------- Add project ----------
+$('#homeDir').textContent = HOME;
+function updatePathHint() {
+  const name = $('#newName').value.trim();
+  $('#newPath').placeholder = `${HOME}\\${name || 'my-project'}`;
+  $('#pathHint').textContent = $('#newPath').value.trim() ? '' : `Leave blank to create it in ${HOME}`;
+}
+$('#newName').addEventListener('input', updatePathHint); $('#newPath').addEventListener('input', updatePathHint);
+$('#addProjectBtn').onclick = () => { $('#addProjectModal').classList.add('open'); updatePathHint(); $('#newName').focus(); };
+$('#cancelAdd').onclick = () => $('#addProjectModal').classList.remove('open');
+$('#addProjectForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  let name = $('#newName').value.trim();
+  let path = $('#newPath').value.trim().replace(/[\\/]+$/, '');
+  if (!name && !path) return $('#newName').focus();
+  if (!name) name = path.split(/[\\/]/).pop();
+  const created = !path;
+  if (!path) path = `${HOME}\\${name}`;
+  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + Date.now().toString(36);
+  state.projects.push({ id, name, path }); FS[id] = [ { name: 'README.md', lang: 'md' } ];
+  state.active = id; $('#newPath').value = ''; $('#newName').value = '';
+  $('#addProjectModal').classList.remove('open'); renderAll();
+  toast(created ? `Created ${tilde(path)} and pinned it` : `Pinned ${tilde(path)}`);
+});
+
+// ---------- Settings ----------
+$('#themeSeg').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#themeSeg button').forEach(x => x.classList.toggle('on', x === b));
+  if (b.dataset.t === 'system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.dataset.theme = b.dataset.t; });
+$('#defaultTypeSeg').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#defaultTypeSeg button').forEach(x => x.classList.toggle('on', x === b)); state.defaultKind = b.dataset.k; });
+
+// ---------- Toast ----------
+let toastT; function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2200); }
+
+renderAll();
+</script>
