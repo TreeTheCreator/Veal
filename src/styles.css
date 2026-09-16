@@ -1,0 +1,65 @@
+/* Design tokens, lifted verbatim from mockup/index.html so the app and mockup stay in step. */
+:root {
+  --bg: #0c0c0d;
+  --bg-sunk: #070708;
+  --panel: #111112;
+  --panel-2: #19191b;
+  --line: #232326;
+  --line-strong: #323236;
+  --text: #ececef;
+  --text-2: #a4a4ab;
+  --muted: #6f6f77;
+  --accent: #7aa2ff;
+  --accent-ink: #0c0c0d;
+  --agent: #e0563e;
+  --agent-soft: rgba(224, 86, 62, 0.16);
+  --shell: #7aa2ff;
+  --shell-soft: rgba(122, 162, 255, 0.16);
+  --ok: #62c483;
+  --sel: rgba(255, 255, 255, 0.07);
+  --shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+  --sans: "Geist", "Inter", "Segoe UI", system-ui, sans-serif;
+  --mono: "Geist Mono", "Cascadia Mono", Consolas, monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 13.5px/1.45 var(--sans); overflow: hidden; -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mono { font-family: var(--mono); }
+svg.i { flex: 0 0 auto; }
+
+/* ---------- App frame ---------- */
+.app { display: grid; grid-template-rows: 44px 1fr; grid-template-columns: 236px 1fr; height: 100%; }
+.topbar { grid-column: 1 / -1; display: grid; grid-template-columns: 236px 1fr 236px; align-items: center; background: var(--panel); border-bottom: 1px solid var(--line); padding: 0 14px 0 16px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; }
+.brand svg { color: var(--text); }
+.brand small { color: var(--muted); font-weight: 400; font-size: 12px; }
+.tabs { justify-self: center; display: flex; background: var(--bg-sunk); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
+.tab { padding: 5px 16px; border-radius: 6px; color: var(--text-2); display: flex; align-items: center; gap: 8px; }
+.tab kbd { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.tab.active { background: var(--panel-2); color: var(--text); font-weight: 500; }
+.tab.active kbd { color: var(--text-2); }
+.topbar-right { justify-self: end; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 11.5px; }
+.pill { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text-2); }
+
+/* ---------- Sidebar ---------- */
+.sidebar { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.side-head { padding: 14px 16px 8px; font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
+.side-head .count { font-family: var(--mono); font-size: 11px; }
+.projects { list-style: none; margin: 0; padding: 0 8px; display: flex; flex-direction: column; gap: 2px; }
+.add-project { margin: 4px 8px 0; padding: 8px 10px; border-radius: 8px; color: var(--text-2); text-align: left; display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.add-project:hover { color: var(--text); background: var(--panel-2); }
+.add-project .plus { width: 16px; text-align: center; font-size: 18px; line-height: 1; }
+.side-foot { margin-top: auto; border-top: 1px solid var(--line); padding: 8px; }
+.settings-btn { width: 100%; text-align: left; padding: 8px 10px; border-radius: 8px; display: flex; align-items: center; gap: 10px; color: var(--text-2); font-size: 14px; }
+.settings-btn:hover { background: var(--panel-2); color: var(--text); }
+
+/* ---------- Main ---------- */
+.main { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
+.toolbar { height: 40px; flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 12.5px; color: var(--text-2); }
+.grow { flex: 1; }
+.hint { color: var(--muted); font-size: 12px; }
+.empty { flex: 1; display: grid; place-items: center; color: var(--muted); font-size: 13px; }
