@@ -125,6 +125,26 @@ svg.i { flex: 0 0 auto; }
 .seg button + button { border-left: 1px solid var(--line-strong); }
 .seg button:disabled { cursor: default; }
 
+/* ---------- Tasks view (mockup .board / .task) ---------- */
+.storage { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.storage .git { color: var(--ok); }
+.tasks-error { flex: 0 0 auto; padding: 8px 14px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+.board { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 12px; align-content: start; }
+.col-head { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; padding: 0 2px 8px; }
+.col-head .n { font-family: var(--mono); color: var(--text-2); }
+.tasks-col { display: flex; flex-direction: column; gap: 8px; }
+.task { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px 9px; display: grid; gap: 7px; }
+.task .title { font-size: 13.5px; overflow-wrap: anywhere; }
+.task.done .title { color: var(--muted); text-decoration: line-through; }
+.task .meta { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); min-height: 20px; }
+.chip { font-family: var(--mono); font-size: 11px; padding: 1px 7px; border-radius: 5px; background: var(--panel-2); border: 1px solid var(--line-strong); color: var(--text-2); }
+.chip.inbox { border-style: dashed; }
+.task .acts { margin-left: auto; display: flex; gap: 2px; }
+.task .acts button { padding: 1px 7px; border-radius: 5px; color: var(--text-2); }
+.task .acts button:hover { background: var(--panel-2); color: var(--text); }
+.add-task { flex: 0 0 auto; display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--panel); }
+.add-task input[type=text] { flex: 1; }
+
 /* ---------- Sidebar rows (mockup .project) ---------- */
 .project-row { position: relative; }
 .project { display: grid; grid-template-columns: 16px 1fr auto auto; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; width: 100%; text-align: left; color: var(--text-2); }

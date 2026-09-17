@@ -5,6 +5,7 @@ import { db, type Project } from "../db";
 import { useFiles } from "../files/store";
 import { panes, type LayoutNode } from "../layout/tree";
 import { samePath } from "../paths";
+import { useTasks } from "../tasks/store";
 
 interface ProjectsState {
   projects: Project[];
@@ -39,6 +40,7 @@ export const useProjects = create<ProjectsState>((set, get) => ({
     // Rust clears `active_project` if it pointed here; pick the next one ourselves.
     await db.projectsRemove(id);
     useFiles.getState().forget(id);
+    useTasks.getState().forget(id);
     const projects = get().projects.filter((p) => p.id !== id);
     if (get().activeId !== id) {
       set({ projects });

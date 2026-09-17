@@ -1,10 +1,13 @@
-//! SQLite persistence: pinned projects and a key/value settings table (which
-//! also holds the serialised pane layout). One connection behind a mutex; the
-//! database is a few dozen rows, so nothing here is async.
+//! SQLite persistence: pinned projects, a key/value settings table (which
+//! also holds the serialised pane layout) and the task Inbox — tasks with no
+//! project, the only tasks not kept in a `.veal/tasks.json` (plan-05). One
+//! connection behind a mutex; the database is a few dozen rows, so nothing
+//! here is async.
 //!
 //! Tauri-agnostic like `pty.rs`: `Db::open_in_memory` lets `cargo test` cover
 //! the migration and every query without a webview.
 
+use crate::tasks::{self, Status, Task};
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -12,7 +15,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 /// Bumped whenever `migrate` gains a step.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 pub const KEY_ACTIVE_PROJECT: &str = "active_project";
 
@@ -161,6 +164,78 @@ impl Db {
             .map(|_| ())
             .map_err(sql_err)
     }
+
+    // ---- inbox ----
+    // Mirrors tasks.rs: every mutation returns the whole list, ids come from
+    // the same generator, so the frontend has one Task type for both.
+
+    fn inbox_list_locked(conn: &Connection) -> Result<Vec<Task>, String> {
+        let mut stmt = conn
+            .prepare("SELECT id, title, status, created FROM tasks ORDER BY position")
+            .map_err(sql_err)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(sql_err)?;
+        rows.map(|row| {
+            let (id, title, status, created) = row.map_err(sql_err)?;
+            let status = Status::parse(&status).map_err(|e| format!("inbox task \"{id}\": {e}"))?;
+            Ok(Task::new(id, title, status, created))
+        })
+        .collect()
+    }
+
+    pub fn inbox_list(&self) -> Result<Vec<Task>, String> {
+        Self::inbox_list_locked(&self.lock())
+    }
+
+    pub fn inbox_add(&self, title: &str, created: &str) -> Result<Vec<Task>, String> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err("empty title".into());
+        }
+        let conn = self.lock();
+        let taken: Vec<String> = Self::inbox_list_locked(&conn)?.into_iter().map(|t| t.id).collect();
+        let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+        let id = tasks::unused_id(&taken, std::iter::repeat_with(tasks::fresh_id))?;
+        let position: i64 = conn
+            .query_row("SELECT COALESCE(MAX(position), 0) + 1 FROM tasks", [], |r| r.get(0))
+            .map_err(sql_err)?;
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, created, position) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, title, Status::Todo.as_str(), created, position],
+        )
+        .map_err(sql_err)?;
+        Self::inbox_list_locked(&conn)
+    }
+
+    pub fn inbox_set_status(&self, id: &str, status: Status) -> Result<Vec<Task>, String> {
+        let conn = self.lock();
+        let changed = conn
+            .execute("UPDATE tasks SET status = ?1 WHERE id = ?2", params![status.as_str(), id])
+            .map_err(sql_err)?;
+        if changed == 0 {
+            return Err(format!("no task \"{id}\""));
+        }
+        Self::inbox_list_locked(&conn)
+    }
+
+    pub fn inbox_remove(&self, id: &str) -> Result<Vec<Task>, String> {
+        let conn = self.lock();
+        let changed = conn
+            .execute("DELETE FROM tasks WHERE id = ?1", [id])
+            .map_err(sql_err)?;
+        if changed == 0 {
+            return Err(format!("no task \"{id}\""));
+        }
+        Self::inbox_list_locked(&conn)
+    }
 }
 
 /// Strips trailing separators so `C:\x\` and `C:\x` are the same pin, and on
@@ -197,6 +272,18 @@ fn migrate(conn: &Connection) -> Result<(), String> {
              CREATE TABLE settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+             );",
+        )
+        .map_err(sql_err)?;
+    }
+    if version < 2 {
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                id       TEXT PRIMARY KEY,
+                title    TEXT NOT NULL,
+                status   TEXT NOT NULL,
+                created  TEXT NOT NULL,
+                position INTEGER NOT NULL
              );",
         )
         .map_err(sql_err)?;
@@ -274,6 +361,46 @@ mod tests {
         let all = db.settings_get_all().unwrap();
         assert_eq!(all.get("shell").map(String::as_str), Some("cmd"));
         assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn v1_database_migrates_to_v2_keeping_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, position INTEGER NOT NULL);
+             CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO projects (name, path, position) VALUES ('veal', 'C:\\veal', 1);
+             INSERT INTO settings (key, value) VALUES ('shell', 'pwsh');
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+        let db = Db::init(conn).unwrap();
+        assert_eq!(db.schema_version().unwrap(), 2);
+        assert_eq!(db.projects_list().unwrap()[0].name, "veal");
+        assert_eq!(db.settings_get("shell").unwrap().as_deref(), Some("pwsh"));
+        assert!(db.inbox_list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn inbox_roundtrip_keeps_position_order() {
+        let db = Db::open_in_memory().unwrap();
+        db.inbox_add("first", "2026-09-17").unwrap();
+        db.inbox_add("second", "2026-09-17").unwrap();
+        let tasks = db.inbox_add("  third ", "2026-09-17").unwrap();
+        let titles: Vec<_> = tasks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["first", "second", "third"]);
+        assert!(tasks.iter().all(|t| t.status == Status::Todo && t.id.len() == 8));
+
+        let tasks = db.inbox_set_status(&tasks[0].id, Status::Done).unwrap();
+        assert_eq!(tasks[0].status, Status::Done);
+        assert_eq!(tasks[0].title, "first");
+        let tasks = db.inbox_remove(&tasks[1].id).unwrap();
+        let titles: Vec<_> = tasks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["first", "third"]);
+
+        assert_eq!(db.inbox_set_status("zz", Status::Done).unwrap_err(), "no task \"zz\"");
+        assert_eq!(db.inbox_remove("zz").unwrap_err(), "no task \"zz\"");
+        assert_eq!(db.inbox_add(" ", "d").unwrap_err(), "empty title");
     }
 
     #[test]

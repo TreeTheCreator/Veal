@@ -1,4 +1,4 @@
-// Step 5: the shell with sidebar, view switching, persistence and the Files view.
+// Step 6: the shell with sidebar, view switching, persistence, Files and Tasks views.
 // Boot loads settings + projects from SQLite, restores the pane layout (or
 // opens one shell in the active project), then starts writing layout changes
 // back. All views stay mounted; inactive ones are hidden with `visibility`
@@ -11,6 +11,7 @@ import { NewTerminalButton } from "./components/NewTerminalButton";
 import { PaneLayout } from "./components/PaneLayout";
 import { SettingsView } from "./components/SettingsView";
 import { Sidebar } from "./components/Sidebar";
+import { TasksView } from "./components/TasksView";
 import { Toast } from "./components/Toast";
 import { LAYOUT_KEY, parseLayout, startLayoutPersistence } from "./layout/persist";
 import { selectPaneCount, useLayout } from "./layout/store";
@@ -126,15 +127,7 @@ export default function App() {
           </section>
 
           <section className={`view${view === "tasks" ? " active" : ""}`} aria-hidden={view !== "tasks"}>
-            <div className="toolbar">
-              <div className="seg" aria-disabled="true">
-                <button className="on" disabled>{active?.name ?? "This project"}</button>
-                <button disabled>All projects</button>
-              </div>
-              <span className="grow" />
-              <span className="hint">.veal/tasks.json per project (step 6)</span>
-            </div>
-            <div className="empty">Tasks arrive in step 6.</div>
+            <TasksView visible={view === "tasks"} />
           </section>
 
           <section className={`view settings-view${view === "settings" ? " active" : ""}`} aria-hidden={view !== "settings"}>

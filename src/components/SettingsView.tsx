@@ -46,7 +46,7 @@ export function SettingsView() {
           <span className="mono">{PANE_CAP}</span>
         </div>
         <div className="srow">
-          <div className="lbl"><b>Task files</b><span>Per-project source of truth, git-trackable (step 6)</span></div>
+          <div className="lbl"><b>Task files</b><span>Per-project source of truth, git-trackable; the Inbox lives in veal.db</span></div>
           <span className="mono">.veal/tasks.json</span>
         </div>
         <div className="srow" style={{ border: 0 }}>

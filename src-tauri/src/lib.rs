@@ -1,9 +1,11 @@
 mod db;
 mod fs;
 mod pty;
+mod tasks;
 
 use db::{Db, Project};
 use pty::{PtyRegistry, SpawnOptions};
+use tasks::{Status, Task, TasksLock};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -118,11 +120,73 @@ fn fs_read(db: State<'_, Db>, path: String) -> Result<fs::FileText, String> {
     fs::read(&fs::confine(&db, &path)?)
 }
 
+// ---- tasks view (src/tasks.rs + the Inbox in src/db.rs) ----
+// `root: None` is the Inbox; `Some` is a pinned project root. The lock
+// serialises the file read-modify-write across commands.
+
+fn task_root(db: &Db, root: Option<String>) -> Result<Option<std::path::PathBuf>, String> {
+    root.map(|r| fs::confine(db, &r)).transpose()
+}
+
+#[tauri::command]
+fn tasks_list(db: State<'_, Db>, lock: State<'_, TasksLock>, root: Option<String>) -> Result<Vec<Task>, String> {
+    let _g = lock.0.lock().unwrap_or_else(|p| p.into_inner());
+    match task_root(&db, root)? {
+        Some(root) => tasks::list(&root),
+        None => db.inbox_list(),
+    }
+}
+
+#[tauri::command]
+fn tasks_add(
+    db: State<'_, Db>,
+    lock: State<'_, TasksLock>,
+    root: Option<String>,
+    title: String,
+    created: String,
+) -> Result<Vec<Task>, String> {
+    let _g = lock.0.lock().unwrap_or_else(|p| p.into_inner());
+    match task_root(&db, root)? {
+        Some(root) => tasks::add(&root, &title, &created),
+        None => db.inbox_add(&title, &created),
+    }
+}
+
+#[tauri::command]
+fn tasks_set_status(
+    db: State<'_, Db>,
+    lock: State<'_, TasksLock>,
+    root: Option<String>,
+    id: String,
+    status: Status,
+) -> Result<Vec<Task>, String> {
+    let _g = lock.0.lock().unwrap_or_else(|p| p.into_inner());
+    match task_root(&db, root)? {
+        Some(root) => tasks::set_status(&root, &id, status),
+        None => db.inbox_set_status(&id, status),
+    }
+}
+
+#[tauri::command]
+fn tasks_remove(
+    db: State<'_, Db>,
+    lock: State<'_, TasksLock>,
+    root: Option<String>,
+    id: String,
+) -> Result<Vec<Task>, String> {
+    let _g = lock.0.lock().unwrap_or_else(|p| p.into_inner());
+    match task_root(&db, root)? {
+        Some(root) => tasks::remove(&root, &id),
+        None => db.inbox_remove(&id),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(PtyRegistry::default()))
+        .manage(TasksLock::default())
         .setup(|app| {
             // %APPDATA%\com.veal.app\veal.db on Windows.
             let path = app.path().app_data_dir()?.join("veal.db");
@@ -142,6 +206,10 @@ pub fn run() {
             path_kind,
             fs_list,
             fs_read,
+            tasks_list,
+            tasks_add,
+            tasks_set_status,
+            tasks_remove,
         ])
         .on_window_event(|window, event| {
             // Kill every shell/agent before the window goes, so nothing is orphaned.
