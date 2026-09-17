@@ -2,6 +2,7 @@
 // SQLite first, so the store only ever reflects what is on disk.
 import { create } from "zustand";
 import { db, type Project } from "../db";
+import { useFiles } from "../files/store";
 import { panes, type LayoutNode } from "../layout/tree";
 import { samePath } from "../paths";
 
@@ -37,6 +38,7 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   async remove(id) {
     // Rust clears `active_project` if it pointed here; pick the next one ourselves.
     await db.projectsRemove(id);
+    useFiles.getState().forget(id);
     const projects = get().projects.filter((p) => p.id !== id);
     if (get().activeId !== id) {
       set({ projects });

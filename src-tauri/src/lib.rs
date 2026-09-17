@@ -1,4 +1,5 @@
 mod db;
+mod fs;
 mod pty;
 
 use db::{Db, Project};
@@ -105,6 +106,18 @@ fn path_kind(path: String) -> &'static str {
     }
 }
 
+// ---- files view (src/fs.rs) ----
+
+#[tauri::command]
+fn fs_list(db: State<'_, Db>, dir: String) -> Result<Vec<fs::Entry>, String> {
+    fs::list(&fs::confine(&db, &dir)?)
+}
+
+#[tauri::command]
+fn fs_read(db: State<'_, Db>, path: String) -> Result<fs::FileText, String> {
+    fs::read(&fs::confine(&db, &path)?)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -127,6 +140,8 @@ pub fn run() {
             settings_get_all,
             settings_set,
             path_kind,
+            fs_list,
+            fs_read,
         ])
         .on_window_event(|window, event| {
             // Kill every shell/agent before the window goes, so nothing is orphaned.

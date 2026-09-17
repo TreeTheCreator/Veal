@@ -1,4 +1,4 @@
-// Step 4: the shell with a live sidebar, view switching and persistence.
+// Step 5: the shell with sidebar, view switching, persistence and the Files view.
 // Boot loads settings + projects from SQLite, restores the pane layout (or
 // opens one shell in the active project), then starts writing layout changes
 // back. All views stay mounted; inactive ones are hidden with `visibility`
@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "./Icon";
 import { AddProjectModal } from "./components/AddProjectModal";
+import { FilesView } from "./components/FilesView";
 import { NewTerminalButton } from "./components/NewTerminalButton";
 import { PaneLayout } from "./components/PaneLayout";
 import { SettingsView } from "./components/SettingsView";
@@ -121,19 +122,7 @@ export default function App() {
           </section>
 
           <section className={`view${view === "files" ? " active" : ""}`} aria-hidden={view !== "files"}>
-            <div className="toolbar">
-              <span>Root</span>
-              <span className="mono" style={{ color: "var(--text)" }}>{cwdLabel ?? "—"}</span>
-              <span className="grow" />
-              <span className="hint">Read-only · CodeMirror viewer (step 5)</span>
-            </div>
-            <div className="empty">
-              <div>
-                Pick a file from the tree.
-                <br />
-                <span className="hint">The file tree and viewer arrive in step 5.</span>
-              </div>
-            </div>
+            <FilesView visible={view === "files"} />
           </section>
 
           <section className={`view${view === "tasks" ? " active" : ""}`} aria-hidden={view !== "tasks"}>

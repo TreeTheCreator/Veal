@@ -17,6 +17,7 @@
   --shell-soft: rgba(122, 162, 255, 0.16);
   --ok: #62c483;
   --sel: rgba(255, 255, 255, 0.07);
+  --num: #e3b34f;
   --shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
   --sans: "Geist", "Inter", "Segoe UI", system-ui, sans-serif;
   --mono: "Geist Mono", "Cascadia Mono", Consolas, monospace;
@@ -143,6 +144,25 @@ svg.i { flex: 0 0 auto; }
 .ctx-menu { position: fixed; z-index: 25; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: var(--shadow); padding: 4px; min-width: 160px; }
 .ctx-menu button { display: block; width: 100%; text-align: left; padding: 7px 10px; border-radius: 6px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ctx-menu button:hover { background: var(--panel-2); }
+
+/* ---------- Files view (step 5, mockup .files / .tree / .viewer) ---------- */
+.files { flex: 1; min-height: 0; display: grid; grid-template-columns: 270px 1fr; }
+.tree { border-right: 1px solid var(--line); overflow: auto; padding: 10px 8px; background: var(--panel); font-family: var(--mono); font-size: 12.5px; }
+.node { display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: 6px; width: 100%; text-align: left; white-space: nowrap; color: var(--text-2); }
+.node:hover { background: var(--panel-2); color: var(--text); }
+.node.open-file { background: var(--sel); color: var(--text); }
+.node .tw { width: 10px; flex: 0 0 10px; color: var(--muted); font-size: 9px; display: inline-block; transition: transform 120ms; }
+.node.dir.collapsed .tw { transform: rotate(-90deg); }
+.node .tw.busy { opacity: 0.4; }
+.node svg { width: 14px; height: 14px; flex: 0 0 auto; }
+.node .nname { overflow: hidden; text-overflow: ellipsis; }
+.tree-error { color: var(--agent); font-size: 11.5px; padding: 2px 8px 6px 25px; white-space: normal; word-break: break-all; }
+.viewer { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.viewer-head { height: 36px; flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 12.5px; color: var(--text-2); background: var(--panel); white-space: nowrap; overflow: hidden; }
+.viewer-head b { color: var(--text); font-weight: 500; }
+.viewer-empty { margin: auto; color: var(--muted); text-align: center; line-height: 1.6; padding: 0 24px; }
+.code { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.code .cm-editor { flex: 1; min-height: 0; }
 
 /* ---------- Settings sheet ---------- */
 .settings-view .sheet { max-width: 580px; margin: 8px 24px; display: grid; }
