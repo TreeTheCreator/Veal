@@ -270,4 +270,89 @@ describe("editing and drafts", () => {
     s.forget(1);
     expect(s.dirtyFiles()).toEqual([{ projectId: 2, root: B, path: `${B}\\y.md` }]);
   });
+
+  describe("onChanged (watcher)", () => {
+    const openApp = async () => {
+      const s = useFiles.getState();
+      s.ensure(1, A);
+      s.toggleDir(1, `${A}\\src`);
+      s.openFile(1, F);
+      await flush();
+      list.mockClear();
+      read.mockClear();
+    };
+    /** Every state the open file passed through during the call. */
+    const statuses = () => {
+      const seen: string[] = [];
+      const unsub = useFiles.subscribe((st) => {
+        const f = st.byProject.get(1)?.file;
+        if (f) seen.push(f.status);
+      });
+      return { seen, unsub };
+    };
+
+    it("ignores an unknown project", () => {
+      useFiles.getState().onChanged({ projectId: 9, paths: [`${A}\\x.md`] });
+      expect(list).not.toHaveBeenCalled();
+    });
+
+    it("re-lists only the shown directories a path touches", async () => {
+      await openApp();
+      useFiles.getState().onChanged({ projectId: 1, paths: [`${A}\\src\\new.ts`, `${A}\\src-tauri\\x.rs`] });
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(list).toHaveBeenCalledWith(`${A}\\src`);
+      expect(read).not.toHaveBeenCalled();
+    });
+
+    it("re-reads the open file quietly; an unchanged mtime and size is a no-op", async () => {
+      await openApp();
+      const gen = loadedFile().gen;
+      const { seen, unsub } = statuses();
+      useFiles.getState().onChanged({ projectId: 1, paths: [F] });
+      await flush();
+      unsub();
+      expect(read).toHaveBeenCalledWith(F);
+      expect(seen).not.toContain("loading");
+      expect(loadedFile().gen).toBe(gen);
+    });
+
+    it("replaces a clean file whose mtime changed, without a loading flip", async () => {
+      await openApp();
+      const gen = loadedFile().gen;
+      read.mockResolvedValueOnce({ text: "new\n", size: 4, mtime: 2000, bom: false });
+      const { seen, unsub } = statuses();
+      useFiles.getState().onChanged({ projectId: 1, paths: [F] });
+      await flush();
+      unsub();
+      expect(seen).not.toContain("loading");
+      expect(loadedFile()).toMatchObject({ text: "new\n", mtime: 2000 });
+      expect(loadedFile().gen).not.toBe(gen);
+    });
+
+    it("marks a dirty file as conflicted and keeps its text", async () => {
+      await openAndEdit();
+      read.mockClear();
+      read.mockResolvedValueOnce({ text: "theirs\n", size: 7, mtime: 2000, bom: false });
+      useFiles.getState().onChanged({ projectId: 1, paths: [F] });
+      await flush();
+      expect(loadedFile()).toMatchObject({ text: "hi\n", mtime: 1000, conflict: "changed" });
+      expect(project().drafts.has(pathKey(F))).toBe(true);
+    });
+
+    it("a deleted clean file becomes an error state", async () => {
+      await openApp();
+      read.mockRejectedValueOnce("not found");
+      useFiles.getState().onChanged({ projectId: 1, paths: [F] });
+      await flush();
+      expect(project().file).toEqual({ status: "error", error: "not found" });
+    });
+
+    it("null paths refresh every expanded directory and the open file", async () => {
+      await openApp();
+      useFiles.getState().onChanged({ projectId: 1, paths: null });
+      await flush();
+      expect(list.mock.calls.map((c) => c[0])).toEqual([A, `${A}\\src`]);
+      expect(read).toHaveBeenCalledWith(F);
+    });
+  });
 });

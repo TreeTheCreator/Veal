@@ -14,7 +14,7 @@ vi.mock("./api", () => ({
   },
 }));
 
-const { useTasks, selectList } = await import("./store");
+const { useTasks, selectList, touchesTasks } = await import("./store");
 
 const ROOT = "C:\\Users\\user\\veal";
 const t = (id: string, status: Task["status"] = "todo"): Task => ({ id, title: id, status, created: "2026-09-17" });
@@ -96,5 +96,45 @@ describe("tasks store", () => {
     expect(setStatus).toHaveBeenCalledWith(null, "i", "done");
     expect(remove).toHaveBeenCalledWith(null, "i");
     expect(useTasks.getState().inbox).toEqual({ status: "loaded", tasks: [] });
+  });
+
+  describe("onChanged (watcher)", () => {
+    const TASKS = `${ROOT}\\.veal\\tasks.json`;
+
+    it("reloads a loaded project without the loading flip", async () => {
+      useTasks.setState({ byProject: new Map([[1, { status: "loaded", tasks: [t("old")] }]]) });
+      const seen: string[] = [];
+      const unsub = useTasks.subscribe((s) => seen.push(selectList(1)(s).status));
+      useTasks.getState().onChanged(1, ROOT, [TASKS]);
+      await flush();
+      unsub();
+      expect(list).toHaveBeenCalledWith(ROOT);
+      expect(seen).not.toContain("loading");
+      expect(selectList(1)(useTasks.getState())).toEqual({ status: "loaded", tasks: [t("a")] });
+    });
+
+    it("ignores a project never loaded, and paths that are not the task file", () => {
+      useTasks.getState().onChanged(1, ROOT, [TASKS]);
+      useTasks.setState({ byProject: new Map([[1, { status: "loaded", tasks: [] }]]) });
+      useTasks.getState().onChanged(1, ROOT, [`${ROOT}\\src\\App.tsx`]);
+      expect(list).not.toHaveBeenCalled();
+    });
+
+    it("matches the .veal directory itself, any case, and null", async () => {
+      useTasks.setState({ byProject: new Map([[1, { status: "loaded", tasks: [] }]]) });
+      const s = useTasks.getState();
+      s.onChanged(1, ROOT, [`${ROOT}\\.veal`]);
+      s.onChanged(1, ROOT, [`c:/users/user/veal/.VEAL/Tasks.json`]);
+      s.onChanged(1, ROOT, null);
+      await flush();
+      expect(list).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  it("touchesTasks", () => {
+    expect(touchesTasks(ROOT, null)).toBe(true);
+    expect(touchesTasks(ROOT, [`${ROOT}\\.veal\\tasks.json`])).toBe(true);
+    expect(touchesTasks(ROOT, [`${ROOT}\\.veal\\tasks.json.tmp`])).toBe(false);
+    expect(touchesTasks(ROOT, [`${ROOT}\\x`])).toBe(false);
   });
 });

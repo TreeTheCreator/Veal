@@ -1,4 +1,4 @@
-// Step 7: the shell with sidebar, view switching, persistence, Files (with editing) and Tasks views.
+// Step 8: the shell with sidebar, view switching, persistence, Files (with editing), Tasks and file watching.
 // Boot loads settings + projects from SQLite, restores the pane layout (or
 // opens one shell in the active project), then starts writing layout changes
 // back. All views stay mounted; inactive ones are hidden with `visibility`
@@ -21,6 +21,7 @@ import { tilde } from "./paths";
 import { selectActive, useProjects } from "./projects/store";
 import { useSettings } from "./settings/store";
 import { isView, TAB_VIEWS, useUi, VIEW_KEY, viewForShortcut, type View } from "./ui";
+import { startWatching } from "./watch";
 
 const TAB_LABEL: Record<View, string> = { terminal: "Terminal", files: "Files", tasks: "Tasks", settings: "Settings" };
 
@@ -38,6 +39,7 @@ async function boot() {
     if (active) useLayout.getState().addPane("shell", active.path);
   }
   startLayoutPersistence();
+  startWatching();
 }
 
 export default function App() {

@@ -49,6 +49,10 @@ export function SettingsView() {
           <div className="lbl"><b>Task files</b><span>Per-project source of truth, git-trackable; the Inbox lives in veal.db</span></div>
           <span className="mono">.veal/tasks.json</span>
         </div>
+        <div className="srow">
+          <div className="lbl"><b>File watching</b><span>Every pinned root, recursively; Refresh still re-lists by hand</span></div>
+          <span className="mono">notify</span>
+        </div>
         <div className="srow" style={{ border: 0 }}>
           <div className="lbl"><b>Restore layout on launch</b><span>Reopens panes, cwds and weights</span></div>
           <label>

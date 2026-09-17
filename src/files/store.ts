@@ -7,6 +7,13 @@ import { create } from "zustand";
 import { fs, type FileText } from "../fs";
 import { useUi } from "../ui";
 import { flatten, pathKey, type DirState } from "./tree";
+import { affected } from "./watch";
+
+/** A watcher batch (`fs-changed`); `paths: null` means refresh everything shown. */
+export interface Batch {
+  projectId: number;
+  paths: string[] | null;
+}
 
 export type FileState =
   | { status: "loading" }
@@ -57,8 +64,10 @@ interface FilesState {
   ensure(projectId: number, root: string): void;
   toggleDir(projectId: number, path: string): void;
   openFile(projectId: number, path: string): void;
-  /** Re-lists the root and every expanded directory, and re-reads the open file. */
+  /** Re-lists the root and every expanded directory, and quietly re-reads the open file. */
   refresh(projectId: number): void;
+  /** Watcher batch: re-lists the shown directories a path touches, quietly re-reads the open file. */
+  onChanged(batch: Batch): void;
   forget(projectId: number): void;
   /** Turns edit mode on/off for a file; off is ignored while it is dirty. */
   setEditing(projectId: number, path: string, on: boolean): void;
@@ -132,14 +141,22 @@ export const useFiles = create<FilesState>((set, get) => {
       return { file: { ...p.file, ...fn(p.file) } as FileState };
     });
 
-  const read = (projectId: number, path: string) => {
+  /**
+   * Opens `path` (a fresh `loading` state) or, `quiet`, re-reads the open
+   * file in place: no `loading` flip — the editor unmounts on it — and an
+   * unchanged mtime + size is a no-op, which is what swallows the watcher
+   * event our own save raises so the cursor stays put.
+   */
+  const read = (projectId: number, path: string, quiet = false) => {
     const key = pathKey(path);
     const p = get().byProject.get(projectId);
     const draft = p?.drafts.get(key);
+    const isOpen = pathKey(p?.open ?? "") === key && p?.file?.status === "loaded";
     // A dirty file keeps its loaded text through a re-read: only a
     // conflict is recorded, so the editor is never reset under the draft.
-    const keepText = draft !== undefined && pathKey(p?.open ?? "") === key && p?.file?.status === "loaded";
-    if (!keepText) patch(projectId, () => ({ open: path, file: { status: "loading" } }));
+    const keepText = draft !== undefined && isOpen;
+    const loadedNow = isOpen && quiet ? (p!.file as FileState & { status: "loaded" }) : null;
+    if (!keepText && !loadedNow) patch(projectId, () => ({ open: path, file: { status: "loading" } }));
     const still = () => pathKey(get().byProject.get(projectId)?.open ?? "") === key;
     fs.read(path).then(
       (f: FileText) => {
@@ -147,6 +164,8 @@ export const useFiles = create<FilesState>((set, get) => {
         const conflict = draft && f.mtime !== draft.mtime ? "changed" : null;
         if (keepText) {
           if (conflict) patchFile(projectId, path, () => ({ conflict }));
+        } else if (loadedNow && f.mtime === loadedNow.mtime && f.size === loadedNow.size) {
+          // Unchanged (or our own write): keep the editor as it is.
         } else {
           // Coming back to a dirty file: the editor restores the stashed draft over this.
           patch(projectId, () => ({ file: { ...loaded(f), conflict } as FileState }));
@@ -207,7 +226,19 @@ export const useFiles = create<FilesState>((set, get) => {
       const dirs = flatten(p.root, p.dirs, p.expanded).filter((r) => r.expanded);
       list(projectId, p.root);
       for (const r of dirs) list(projectId, r.path);
-      if (p.open) read(projectId, p.open);
+      if (p.open) read(projectId, p.open, true);
+    },
+
+    onChanged({ projectId, paths }) {
+      const p = get().byProject.get(projectId);
+      if (!p) return;
+      if (paths === null) {
+        get().refresh(projectId);
+        return;
+      }
+      const { dirs, file } = affected(p, paths);
+      for (const d of dirs) list(projectId, d);
+      if (file && p.open) read(projectId, p.open, true);
     },
 
     forget(projectId) {

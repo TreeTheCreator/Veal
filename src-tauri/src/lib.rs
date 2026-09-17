@@ -2,10 +2,12 @@ mod db;
 mod fs;
 mod pty;
 mod tasks;
+mod watch;
 
 use db::{Db, Project};
 use pty::{PtyRegistry, SpawnOptions};
 use tasks::{Status, Task, TasksLock};
+use watch::Watchers;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,6 +18,21 @@ use tauri::{Emitter, Manager, State, WindowEvent};
 struct PtyExit {
     id: u32,
     code: Option<i32>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WatchError {
+    project_id: u32,
+    error: String,
+}
+
+/// Watches a pinned root; a failure is an event, not a command error — the
+/// pin itself stands, the project is just not live (plan-07, decision 7).
+fn watch_root(app: &tauri::AppHandle, watchers: &Watchers, project: &Project) {
+    if let Err(error) = watchers.watch(project.id, std::path::Path::new(&project.path)) {
+        let _ = app.emit("fs-watch-error", WatchError { project_id: project.id, error });
+    }
 }
 
 #[tauri::command]
@@ -76,12 +93,21 @@ fn projects_list(db: State<'_, Db>) -> Result<Vec<Project>, String> {
 }
 
 #[tauri::command]
-fn projects_add(db: State<'_, Db>, name: String, path: String) -> Result<Project, String> {
-    db.projects_add(&name, &path)
+fn projects_add(
+    app: tauri::AppHandle,
+    db: State<'_, Db>,
+    watchers: State<'_, Watchers>,
+    name: String,
+    path: String,
+) -> Result<Project, String> {
+    let project = db.projects_add(&name, &path)?;
+    watch_root(&app, &watchers, &project);
+    Ok(project)
 }
 
 #[tauri::command]
-fn projects_remove(db: State<'_, Db>, id: u32) -> Result<(), String> {
+fn projects_remove(db: State<'_, Db>, watchers: State<'_, Watchers>, id: u32) -> Result<(), String> {
+    watchers.unwatch(id);
     db.projects_remove(id)
 }
 
@@ -213,6 +239,16 @@ pub fn run() {
             // %APPDATA%\com.veal.app\veal.db on Windows.
             let path = app.path().app_data_dir()?.join("veal.db");
             app.manage(Db::open(&path)?);
+            // One coalescing thread for every pinned root; batches reach JS
+            // as `fs-changed` (plan-07).
+            let handle = app.handle().clone();
+            let watchers = Watchers::new(move |batch| {
+                let _ = handle.emit("fs-changed", batch);
+            });
+            for project in app.state::<Db>().projects_list()? {
+                watch_root(app.handle(), &watchers, &project);
+            }
+            app.manage(watchers);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
