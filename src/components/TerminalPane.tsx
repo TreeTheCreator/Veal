@@ -1,12 +1,14 @@
-// One xterm.js terminal bound to one PTY. Step 2 scope: a single pane filling
-// the content area. Pane chrome (header, badges, splits) arrives in step 3.
-import { useEffect, useRef, useState } from "react";
+// One xterm.js terminal bound to one PTY, with the pane chrome from the
+// mockup: kind badge, project name, cwd, close. Positioned absolutely by
+// PaneLayout so it never remounts when the split tree changes shape.
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { spawnPty, type PtySession } from "../pty";
 import { createResizeScheduler } from "../resize";
+import type { PaneNode } from "../layout/tree";
 
 // Fallback when the container has no layout yet at first fit().
 const DEFAULT_COLS = 120;
@@ -14,12 +16,33 @@ const DEFAULT_ROWS = 30;
 
 const isWindows = navigator.userAgent.includes("Windows");
 
-interface Props {
-  cwd: string;
+// Project name until the sidebar supplies one (step 4).
+export function basename(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
 }
 
-export function TerminalPane({ cwd }: Props) {
+// Tauri only sets HOME-style tilde on unix; do it by hand for display.
+function tilde(path: string): string {
+  const m = path.match(/^([A-Za-z]:[\\/]Users[\\/][^\\/]+)(.*)$/);
+  return m ? `~${m[2]}` : path;
+}
+
+interface Props {
+  pane: PaneNode;
+  focused: boolean;
+  style: CSSProperties;
+  onFocus(): void;
+  onClose(): void;
+  onFlip(): void;
+}
+
+export function TerminalPane({ pane, focused, style, onFocus, onClose, onFlip }: Props) {
+  const { id, kind, cwd } = pane;
   const hostRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const [exitCode, setExitCode] = useState<number | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,7 +57,7 @@ export function TerminalPane({ cwd }: Props) {
       cursorBlink: true,
       allowProposedApi: true,
       theme: {
-        background: "#0c0c0d",
+        background: "#070708",
         foreground: "#ececef",
         cursor: "#7aa2ff",
         selectionBackground: "rgba(255,255,255,0.07)",
@@ -42,6 +65,7 @@ export function TerminalPane({ cwd }: Props) {
       // Turns on xterm's ConPTY heuristics (scrollback on resize, no reflow).
       windowsPty: isWindows ? { backend: "conpty", buildNumber: 26200 } : undefined,
     });
+    termRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
@@ -63,14 +87,17 @@ export function TerminalPane({ cwd }: Props) {
     let disposed = false;
     const disposables: Array<() => void> = [];
 
-    // Dev-only hook so the pane can be driven and inspected over CDP.
+    // Dev-only hook so panes can be driven and inspected over CDP.
     if (import.meta.env.DEV) {
-      (window as unknown as { __veal?: unknown }).__veal = {
+      const w = window as unknown as { __veal?: { panes: Map<number, unknown> } };
+      w.__veal ??= { panes: new Map() };
+      w.__veal.panes.set(id, {
         term,
         get session() {
           return session;
         },
-      };
+      });
+      disposables.push(() => w.__veal?.panes.delete(id));
     }
 
     const resizer = createResizeScheduler(({ cols, rows }) => {
@@ -95,8 +122,13 @@ export function TerminalPane({ cwd }: Props) {
           resizer.schedule({ cols: term.cols, rows: term.rows });
         }
         disposables.push(term.onData((d) => s.write(d).catch((e) => console.warn("pty_write", e))).dispose);
-        disposables.push(s.onExit((code) => setExitCode(code)));
-        term.focus();
+        disposables.push(
+          s.onExit((code) => {
+            // A clean `exit` closes the pane; anything else stays visible.
+            if (code === 0) onCloseRef.current();
+            else setExitCode(code);
+          }),
+        );
       })
       .catch((e) => setError(String(e)));
 
@@ -107,11 +139,45 @@ export function TerminalPane({ cwd }: Props) {
       disposables.forEach((d) => d());
       session?.kill().catch(() => {});
       term.dispose();
+      termRef.current = null;
     };
-  }, [cwd]);
+  }, [id, cwd]);
+
+  useEffect(() => {
+    if (focused) termRef.current?.focus();
+  }, [focused]);
 
   return (
-    <div className="pane">
+    <div
+      className={`pane ${kind}${focused ? " focused" : ""}`}
+      style={style}
+      data-pane={id}
+      onPointerDown={onFocus}
+    >
+      <div className="pane-head">
+        <button
+          className={`badge flip ${kind}`}
+          title="Flip pane type"
+          onClick={(e) => {
+            e.stopPropagation();
+            onFlip();
+          }}
+        >
+          {kind}
+        </button>
+        <span className="pname">{basename(cwd)}</span>
+        <span className="cwd" title={cwd}>{tilde(cwd)}</span>
+        <button
+          className="close"
+          title="Close pane"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
+        >
+          ×
+        </button>
+      </div>
       <div className="pane-term" ref={hostRef} />
       {error && <div className="pane-footer error">failed to start shell: {error}</div>}
       {exitCode !== undefined && (
