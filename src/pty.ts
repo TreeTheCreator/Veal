@@ -1,5 +1,5 @@
 // Thin wrapper over the pty_* commands so components never call `invoke` directly.
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export interface SpawnOptions {
@@ -8,6 +8,13 @@ export interface SpawnOptions {
   rows: number;
   shell?: string;
 }
+
+/**
+ * Output callback (plan-15): `done` must be called once xterm has consumed
+ * `bytes`; the next fetch waits for it, which is what gives the whole chain,
+ * down to the child's write(), backpressure.
+ */
+export type OnData = (bytes: Uint8Array, done: () => void) => void;
 
 export interface PtySession {
   id: number;
@@ -26,6 +33,20 @@ export interface PtySession {
 interface PtyExit {
   id: number;
   code: number | null;
+}
+
+interface PtyData {
+  id: number;
+}
+
+// Output is pulled (plan-15): Rust emits `pty-data` once when a pane's outbox
+// goes from empty to non-empty, and the session drains it with `pty_read`
+// until empty. One app-wide listener, fanned out by PTY id to the drain.
+const dataHandlers = new Map<number, () => void>();
+let dataListener: Promise<UnlistenFn> | null = null;
+
+function ensureDataListener() {
+  dataListener ??= listen<PtyData>("pty-data", (ev) => dataHandlers.get(ev.payload.id)?.());
 }
 
 /** Mirrors `AGENTS` in src-tauri/src/agents.rs — display only; Rust decides. */
@@ -67,21 +88,57 @@ function ensureExitListener() {
   });
 }
 
-export async function spawnPty(
-  opts: SpawnOptions,
-  onData: (bytes: Uint8Array) => void,
-): Promise<PtySession> {
+export async function spawnPty(opts: SpawnOptions, onData: OnData): Promise<PtySession> {
   ensureExitListener();
   ensureAgentListener();
-  // The Rust side sends raw bytes; they arrive as an ArrayBuffer.
-  const out = new Channel<ArrayBuffer>();
-  out.onmessage = (buf) => onData(new Uint8Array(buf));
-  const id = await invoke<number>("pty_spawn", { ...opts, shell: opts.shell ?? null, out });
+  ensureDataListener();
+  const id = await invoke<number>("pty_spawn", { ...opts, shell: opts.shell ?? null });
+
+  // The drain: one loop per session, fetching until the outbox is empty. A
+  // signal during a loop asks for one more fetch rather than a second loop;
+  // a signal outside one starts it. `pty_read` answers with an ArrayBuffer.
+  let live = true;
+  let running = false;
+  let again = false;
+  const drain = async () => {
+    if (running) {
+      again = true;
+      return;
+    }
+    running = true;
+    try {
+      while (live) {
+        again = false;
+        const bytes = new Uint8Array(await invoke<ArrayBuffer>("pty_read", { id }));
+        if (!live) break;
+        if (bytes.length === 0) {
+          if (again) continue;
+          break;
+        }
+        await new Promise<void>((done) => onData(bytes, done));
+      }
+    } catch (e) {
+      console.warn("pty_read", e);
+    } finally {
+      running = false;
+    }
+  };
+  dataHandlers.set(id, drain);
+  // The shell may have written (and signalled) before `pty_spawn` replied:
+  // that signal is folded into Rust's `notified` flag, so one unconditional
+  // drain covers it and nothing before this point can be lost.
+  void drain();
+
   return {
     id,
     write: (data) => invoke("pty_write", { id, data }),
     resize: (cols, rows) => invoke("pty_resize", { id, cols, rows }),
-    kill: () => invoke("pty_kill", { id }),
+    kill: () => {
+      // Rust drops the outbox on kill; stop fetching and stop listening.
+      live = false;
+      dataHandlers.delete(id);
+      return invoke("pty_kill", { id });
+    },
     onExit(cb) {
       if (earlyExits.has(id)) {
         const code = earlyExits.get(id)!;

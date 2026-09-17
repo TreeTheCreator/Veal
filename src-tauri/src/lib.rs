@@ -12,13 +12,20 @@ use watch::Watchers;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri::ipc::Response;
 use tauri::{Emitter, Manager, State, WindowEvent};
 
 #[derive(Clone, Serialize)]
 struct PtyExit {
     id: u32,
     code: Option<i32>,
+}
+
+/// The pane's outbox went from empty to non-empty (plan-15): the frontend
+/// drains it with `pty_read` until empty.
+#[derive(Clone, Serialize)]
+struct PtyData {
+    id: u32,
 }
 
 #[derive(Clone, Serialize)]
@@ -44,12 +51,10 @@ fn pty_spawn(
     cols: u16,
     rows: u16,
     shell: Option<String>,
-    out: Channel<InvokeResponseBody>,
 ) -> Result<u32, String> {
-    // Raw bytes reach JS as an ArrayBuffer; xterm decodes UTF-8 itself, so a
-    // chunk boundary inside a multibyte sequence is harmless.
-    let on_data = move |chunk: Vec<u8>| {
-        let _ = out.send(InvokeResponseBody::Raw(chunk));
+    let ready_app = app.clone();
+    let on_data_ready = move |id: u32| {
+        let _ = ready_app.emit("pty-data", PtyData { id });
     };
     let on_exit = move |id: u32, code: Option<i32>| {
         let _ = app.emit("pty-exit", PtyExit { id, code });
@@ -61,9 +66,16 @@ fn pty_spawn(
             rows,
             shell,
         },
-        on_data,
+        on_data_ready,
         on_exit,
     )
+}
+
+/// Raw bytes reach JS as an ArrayBuffer over the ipc protocol; xterm decodes
+/// UTF-8 itself, so a take boundary inside a multibyte sequence is harmless.
+#[tauri::command]
+fn pty_read(registry: State<'_, Arc<PtyRegistry>>, id: u32) -> Response {
+    Response::new(registry.take(id))
 }
 
 #[tauri::command]
@@ -311,6 +323,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             pty_spawn,
+            pty_read,
             pty_write,
             pty_resize,
             pty_kill,

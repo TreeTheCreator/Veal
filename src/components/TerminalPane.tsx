@@ -122,7 +122,9 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose, on
 
     // The shell setting is read at spawn time: it applies to new panes only.
     const shell = shellForSpawn(useSettings.getState().shell);
-    spawnPty({ cwd, cols, rows, shell }, (bytes) => term.write(bytes))
+    // xterm's write callback fires once the bytes are parsed; the next
+    // fetch waits for it (plan-15).
+    spawnPty({ cwd, cols, rows, shell }, (bytes, done) => term.write(bytes, done))
       .then((s) => {
         if (disposed) {
           s.kill().catch(() => {});

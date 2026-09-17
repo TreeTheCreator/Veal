@@ -310,7 +310,7 @@ mod tests {
         use std::time::Instant;
 
         let registry = Arc::new(PtyRegistry::default());
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let (tx, rx) = mpsc::channel::<u32>();
         let shell = if cfg!(windows) { "cmd.exe" } else { "/bin/sh" };
         let id = registry
             .spawn(
@@ -320,8 +320,8 @@ mod tests {
                     rows: 24,
                     shell: Some(shell.into()),
                 },
-                move |c| {
-                    let _ = tx.send(c);
+                move |id| {
+                    let _ = tx.send(id);
                 },
                 |_, _| {},
             )
@@ -333,9 +333,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut answered = false;
         while Instant::now() < deadline {
-            if let Ok(c) = rx.recv_timeout(Duration::from_millis(200)) {
-                out.extend(c);
-            }
+            let _ = rx.recv_timeout(Duration::from_millis(50));
+            out.extend(registry.take(id));
             if !answered && out.windows(4).any(|w| w == b"\x1b[6n") {
                 registry.write(id, b"\x1b[1;1R").unwrap();
                 answered = true;

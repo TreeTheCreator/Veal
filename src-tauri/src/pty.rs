@@ -7,19 +7,103 @@
 //! which happens when we drop the master, so "child exited" has to be observed
 //! independently of the byte stream.
 //!
+//! Output is pulled, not pushed (plan-15): the reader appends to a per-pane
+//! `Outbox`, signals the frontend once per idle-to-busy edge, and the
+//! frontend drains with `take` at its own pace. Above `OUTBOX_CAP` the reader
+//! blocks, which blocks the child: backpressure, as a terminal that is not
+//! being read applies it.
+//!
 //! The registry is Tauri-agnostic (callbacks instead of channels/events) so it
 //! can be exercised from `cargo test` without a webview.
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
-/// Bytes per `read()` on the PTY master. Each chunk goes straight to the
-/// frontend as one channel message; no coalescing in v1.
+/// Bytes per `read()` on the PTY master.
 const READ_BUF: usize = 16 * 1024;
+
+/// Unfetched bytes a pane may hold before its reader stops reading. An agent
+/// redraw is tens of KB; this is seconds of the heaviest flood.
+pub const OUTBOX_CAP: usize = 1024 * 1024;
+
+/// Bytes read from the PTY that the frontend has not fetched yet.
+#[derive(Default)]
+struct Outbox {
+    buf: Vec<u8>,
+    /// A data-ready signal is outstanding: the frontend will drain, so no
+    /// further signal is needed until it has.
+    notified: bool,
+    /// The reader hit EOF; nothing more will ever be appended.
+    eof: bool,
+}
+
+/// One pane's outbox plus the flags that release a reader waiting at the cap.
+#[derive(Default)]
+struct Shared {
+    out: Mutex<Outbox>,
+    drained: Condvar,
+    /// The frontend gave the pane up (`kill`): discard, never block.
+    closed: AtomicBool,
+    /// The child exited: the waiter must not be held up by a full outbox.
+    exited: AtomicBool,
+}
+
+impl Shared {
+    /// Append `bytes` unless the pane is closed; block while the outbox is
+    /// full and the child is alive. Returns whether the frontend needs a
+    /// data-ready signal.
+    fn push(&self, bytes: &[u8]) -> bool {
+        if self.closed.load(Ordering::Relaxed) {
+            return false;
+        }
+        let mut o = self.out.lock().unwrap_or_else(|p| p.into_inner());
+        while o.buf.len() >= OUTBOX_CAP
+            && !self.exited.load(Ordering::Relaxed)
+            && !self.closed.load(Ordering::Relaxed)
+        {
+            o = self.drained.wait(o).unwrap_or_else(|p| p.into_inner());
+        }
+        // Woken by close or exit with the outbox still full: drop the bytes.
+        if self.closed.load(Ordering::Relaxed) || o.buf.len() >= OUTBOX_CAP {
+            return false;
+        }
+        o.buf.extend_from_slice(bytes);
+        let signal = !o.notified;
+        o.notified = true;
+        signal
+    }
+
+    /// Hand the frontend everything so far. Clears `notified` under the same
+    /// lock `push` sets it, so an append after this take always signals.
+    /// Returns `(bytes, finished)`; finished means EOF was reached.
+    fn take(&self) -> (Vec<u8>, bool) {
+        let mut o = self.out.lock().unwrap_or_else(|p| p.into_inner());
+        let bytes = std::mem::take(&mut o.buf);
+        o.notified = false;
+        let finished = o.eof;
+        drop(o);
+        self.drained.notify_all();
+        (bytes, finished)
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Relaxed);
+        self.drained.notify_all();
+    }
+
+    fn exit(&self) {
+        self.exited.store(true, Ordering::Relaxed);
+        self.drained.notify_all();
+    }
+
+    fn set_eof(&self) {
+        self.out.lock().unwrap_or_else(|p| p.into_inner()).eof = true;
+    }
+}
 
 pub struct SpawnOptions {
     pub cwd: String,
@@ -37,12 +121,17 @@ struct PtyHandle {
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// The shell's pid; agent detection walks its descendants.
     pid: Option<u32>,
+    shared: Arc<Shared>,
 }
 
 #[derive(Default)]
 pub struct PtyRegistry {
     next_id: AtomicU32,
     panes: Mutex<HashMap<u32, PtyHandle>>,
+    /// Outboxes outlive their handles: a shell that exits at once still has
+    /// output the frontend has not fetched. An entry leaves when the
+    /// frontend has taken everything after EOF, or when it kills the pane.
+    outboxes: Mutex<HashMap<u32, Arc<Shared>>>,
 }
 
 fn no_pty(id: u32) -> String {
@@ -76,13 +165,15 @@ pub fn default_shell() -> String {
 }
 
 impl PtyRegistry {
-    /// Spawn a shell. `on_data` runs on the reader thread for every chunk;
-    /// `on_exit` runs exactly once, after the handle has been removed from the
-    /// registry, with the pane id and exit code (`None` if it could not be read).
+    /// Spawn a shell. `on_data_ready` runs on the reader thread when the
+    /// outbox goes from empty to non-empty (the frontend then `take`s until it
+    /// is empty again); `on_exit` runs exactly once, after the handle has been
+    /// removed from the registry, with the pane id and exit code (`None` if it
+    /// could not be read).
     pub fn spawn(
         self: &Arc<Self>,
         opts: SpawnOptions,
-        mut on_data: impl FnMut(Vec<u8>) + Send + 'static,
+        mut on_data_ready: impl FnMut(u32) + Send + 'static,
         on_exit: impl FnOnce(u32, Option<i32>) + Send + 'static,
     ) -> Result<u32, String> {
         // Windows shells silently fall back to the profile directory when the
@@ -114,6 +205,8 @@ impl PtyRegistry {
         let pid = child.process_id();
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let shared = Arc::new(Shared::default());
+        self.outboxes.lock().unwrap().insert(id, Arc::clone(&shared));
         self.panes.lock().unwrap().insert(
             id,
             PtyHandle {
@@ -121,31 +214,39 @@ impl PtyRegistry {
                 writer: Arc::new(Mutex::new(writer)),
                 killer,
                 pid,
+                shared: Arc::clone(&shared),
             },
         );
 
+        let reader_shared = Arc::clone(&shared);
         thread::Builder::new()
             .name(format!("pty-{id}-read"))
             .spawn(move || {
                 let mut buf = vec![0u8; READ_BUF];
-                let mut chunks = 0u32;
+                let mut bytes = 0usize;
                 let mut window = std::time::Instant::now();
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            on_data(buf[..n].to_vec());
+                            // Always read to EOF: on Windows ClosePseudoConsole
+                            // waits for the pipe to drain. `push` discards
+                            // once the pane is closed.
+                            if reader_shared.push(&buf[..n]) {
+                                on_data_ready(id);
+                            }
                             if cfg!(debug_assertions) {
-                                chunks += 1;
+                                bytes += n;
                                 if window.elapsed().as_secs() >= 1 {
-                                    eprintln!("[pty {id}] {chunks} chunks/s");
-                                    chunks = 0;
+                                    eprintln!("[pty {id}] {} KB/s read", bytes / 1024);
+                                    bytes = 0;
                                     window = std::time::Instant::now();
                                 }
                             }
                         }
                     }
                 }
+                reader_shared.set_eof();
             })
             .map_err(|e| e.to_string())?;
 
@@ -154,6 +255,9 @@ impl PtyRegistry {
             .name(format!("pty-{id}-wait"))
             .spawn(move || {
                 let code = child.wait().ok().map(|s| s.exit_code() as i32);
+                // Release a reader waiting at the cap before the drop below:
+                // ClosePseudoConsole needs the reader to reach EOF.
+                shared.exit();
                 // Drop the handle outside the lock: on Windows this is
                 // ClosePseudoConsole, which blocks until output is drained.
                 let handle = registry.panes.lock().unwrap().remove(&id);
@@ -163,6 +267,24 @@ impl PtyRegistry {
             .map_err(|e| e.to_string())?;
 
         Ok(id)
+    }
+
+    /// Everything read since the last take. Empty for an unknown id: the
+    /// pane is gone and fully drained, which is not an error for a drain
+    /// loop. The outbox is dropped once EOF has been reached and taken.
+    pub fn take(&self, id: u32) -> Vec<u8> {
+        let shared = {
+            let outboxes = self.outboxes.lock().unwrap();
+            match outboxes.get(&id) {
+                Some(s) => Arc::clone(s),
+                None => return Vec::new(),
+            }
+        };
+        let (bytes, finished) = shared.take();
+        if finished && bytes.is_empty() {
+            self.outboxes.lock().unwrap().remove(&id);
+        }
+        bytes
     }
 
     /// Writes to the child. The registry lock is held only to find the
@@ -186,7 +308,13 @@ impl PtyRegistry {
     /// Terminate the child. Idempotent: an unknown id is not an error, because
     /// the waiter thread may already have removed it. Cleanup and the exit
     /// callback still happen on the waiter thread.
+    /// The frontend is done with the pane: its outbox is dropped and the
+    /// reader discards from here on, so a full outbox can never hold up
+    /// the child's teardown.
     pub fn kill(&self, id: u32) -> Result<(), String> {
+        if let Some(s) = self.outboxes.lock().unwrap().remove(&id) {
+            s.close();
+        }
         let mut panes = self.panes.lock().unwrap();
         if let Some(h) = panes.get_mut(&id) {
             h.killer.kill().map_err(|e| e.to_string())?;
@@ -199,6 +327,7 @@ impl PtyRegistry {
     pub fn kill_all(&self) {
         let mut panes = self.panes.lock().unwrap();
         for h in panes.values_mut() {
+            h.shared.close();
             let _ = h.killer.kill();
         }
     }
@@ -231,32 +360,107 @@ mod tests {
         }
     }
 
-    /// Drain `rx` into `acc` until `pred` matches or `timeout` passes.
+    /// Drain the pane's outbox into `acc` until `pred` matches or `timeout`
+    /// passes. `ready` carries the data-ready signals; a take happens after
+    /// each one, and on a short tick regardless.
     fn read_until(
-        rx: &mpsc::Receiver<Vec<u8>>,
+        registry: &PtyRegistry,
+        id: u32,
+        ready: &mpsc::Receiver<u32>,
         acc: &mut Vec<u8>,
         timeout: Duration,
         pred: impl Fn(&[u8]) -> bool,
     ) -> bool {
         let deadline = Instant::now() + timeout;
-        while !pred(acc) {
+        loop {
+            acc.extend(registry.take(id));
+            if pred(acc) {
+                return true;
+            }
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
                 return false;
             };
-            match rx.recv_timeout(left) {
-                Ok(chunk) => acc.extend(chunk),
-                Err(_) => return false,
-            }
+            let _ = ready.recv_timeout(left.min(Duration::from_millis(50)));
         }
-        true
+    }
+
+    // ---- Outbox / Shared: the pull protocol without a PTY ----
+
+    #[test]
+    fn push_signals_once_until_taken() {
+        let s = Shared::default();
+        assert!(s.push(b"a"), "first push after empty signals");
+        assert!(!s.push(b"b"), "outbox already announced");
+        assert_eq!(s.take(), (b"ab".to_vec(), false));
+        assert!(s.push(b"c"), "take cleared the signal");
+        assert_eq!(s.take(), (b"c".to_vec(), false));
+        assert_eq!(s.take(), (Vec::new(), false));
+    }
+
+    #[test]
+    fn push_blocks_at_cap_until_take() {
+        let s = Arc::new(Shared::default());
+        s.push(&vec![0u8; OUTBOX_CAP]);
+        let (tx, rx) = mpsc::channel();
+        let s2 = Arc::clone(&s);
+        thread::spawn(move || {
+            let signalled = s2.push(b"late");
+            let _ = tx.send(signalled);
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "push must block while the outbox is full"
+        );
+        let (bytes, _) = s.take();
+        assert_eq!(bytes.len(), OUTBOX_CAP);
+        // Released: the blocked push lands and, the outbox having been
+        // emptied by the take, signals again.
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(true));
+        assert_eq!(s.take().0, b"late".to_vec());
+    }
+
+    #[test]
+    fn close_releases_a_blocked_push_and_discards() {
+        let s = Arc::new(Shared::default());
+        s.push(&vec![0u8; OUTBOX_CAP]);
+        let (tx, rx) = mpsc::channel();
+        let s2 = Arc::clone(&s);
+        thread::spawn(move || {
+            let _ = tx.send(s2.push(b"x"));
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        s.close();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(false));
+        assert!(!s.push(b"y"), "closed: nothing is buffered");
+        assert_eq!(s.take().0.len(), OUTBOX_CAP, "what was buffered before close stays");
+    }
+
+    #[test]
+    fn exit_releases_a_blocked_push_without_closing() {
+        let s = Arc::new(Shared::default());
+        s.push(&vec![0u8; OUTBOX_CAP]);
+        let s2 = Arc::clone(&s);
+        let t = thread::spawn(move || s2.push(b"x"));
+        s.exit();
+        assert!(!t.join().unwrap(), "full at exit: the bytes are dropped");
+        s.take();
+        assert!(s.push(b"after"), "below the cap, an exited pane still buffers");
+        s.set_eof();
+        assert_eq!(s.take(), (b"after".to_vec(), true));
+    }
+
+    #[test]
+    fn take_of_unknown_id_is_empty() {
+        let registry = PtyRegistry::default();
+        assert!(registry.take(9).is_empty());
     }
 
     /// Spawn a shell, type an echo, check the bytes come back through
-    /// `on_data`, then that `on_exit` fires and the handle is gone.
+    /// `take`, then that `on_exit` fires and the handle is gone.
     #[test]
     fn spawn_echo_reads_output_and_cleans_up() {
         let registry = Arc::new(PtyRegistry::default());
-        let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>();
+        let (ready_tx, ready_rx) = mpsc::channel::<u32>();
         let (exit_tx, exit_rx) = mpsc::channel::<Option<i32>>();
 
         let id = registry
@@ -267,8 +471,8 @@ mod tests {
                     rows: 24,
                     shell: Some(echo_shell()),
                 },
-                move |chunk| {
-                    let _ = data_tx.send(chunk);
+                move |id| {
+                    let _ = ready_tx.send(id);
                 },
                 move |_id, code| {
                     let _ = exit_tx.send(code);
@@ -282,7 +486,7 @@ mod tests {
             // ConPTY asks the terminal where the cursor is (CSI 6n) before it
             // runs the shell and blocks until it gets an answer. xterm.js
             // replies in the app; here we have to play the terminal.
-            let asked = read_until(&data_rx, &mut out, Duration::from_secs(10), |b| {
+            let asked = read_until(&registry, id, &ready_rx, &mut out, Duration::from_secs(10), |b| {
                 b.windows(4).any(|w| w == b"\x1b[6n")
             });
             assert!(
@@ -295,7 +499,7 @@ mod tests {
 
         // Type only once the shell is at its prompt; input sent while it is
         // still starting up can be dropped.
-        let prompted = read_until(&data_rx, &mut out, Duration::from_secs(10), |b| {
+        let prompted = read_until(&registry, id, &ready_rx, &mut out, Duration::from_secs(10), |b| {
             b.contains(&b'>') || b.contains(&b'$')
         });
         assert!(
@@ -305,7 +509,7 @@ mod tests {
         );
 
         registry.write(id, b"echo veal-ok\r\n").unwrap();
-        let echoed = read_until(&data_rx, &mut out, Duration::from_secs(10), |b| {
+        let echoed = read_until(&registry, id, &ready_rx, &mut out, Duration::from_secs(10), |b| {
             // Look past the input echo for the command's own output line.
             String::from_utf8_lossy(b).matches("veal-ok").count() >= 2
         });
@@ -321,6 +525,17 @@ mod tests {
             .expect("pty-exit within 10s");
         assert_eq!(code, Some(0));
         assert!(!registry.contains(id), "handle removed after exit");
+
+        // The outbox outlives the handle until the tail has been taken.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            registry.take(id);
+            if !registry.outboxes.lock().unwrap().contains_key(&id) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "outbox not released after EOF");
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]
