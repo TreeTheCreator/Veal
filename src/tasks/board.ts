@@ -40,6 +40,11 @@ export function forward(status: Status): Status {
   return status === "todo" ? "doing" : "done";
 }
 
+/** ◂: done → doing → todo (plan-11). */
+export function backward(status: Status): Status {
+  return status === "done" ? "doing" : "todo";
+}
+
 /** Local `YYYY-MM-DD` — the webview is the only clock that knows the zone. */
 export function today(now: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");

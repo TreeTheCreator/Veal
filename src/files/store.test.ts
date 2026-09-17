@@ -20,6 +20,8 @@ vi.mock("../fs", () => ({
 }));
 const showToast = vi.fn();
 vi.mock("../ui", () => ({ useUi: { getState: () => ({ showToast }) } }));
+const settingsSet = vi.fn<(key: string, value: string) => Promise<void>>(async () => {});
+vi.mock("../db", () => ({ db: { settingsSet: (k: string, v: string) => settingsSet(k, v) } }));
 
 const { useFiles, detectCrlf } = await import("./store");
 const { pathKey } = await import("./tree");
@@ -34,7 +36,8 @@ const file = (name: string) => ({ name, kind: "file", size: 3 });
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
-  useFiles.setState({ byProject: new Map(), edit: null });
+  useFiles.setState({ byProject: new Map(), edit: null, saved: new Map() });
+  settingsSet.mockClear();
   for (const fn of [create, rename, del]) fn.mockReset();
   list.mockReset();
   read.mockReset();
@@ -460,6 +463,36 @@ describe("editing and drafts", () => {
       expect(s.dirtyUnder(1, `${SRC}\\App.tsx`)).toHaveLength(1);
       expect(s.dirtyUnder(1, `${A}\\src-tauri`)).toEqual([]);
       expect(s.dirtyUnder(9, SRC)).toEqual([]);
+    });
+  });
+
+  describe("restore (plan-11)", () => {
+    it("ensure with a saved state expands, lists every saved dir and opens the file", async () => {
+      useFiles.getState().restore(new Map([[1, { expanded: [`${A}\\src`], open: `${A}\\src\\App.tsx` }]]));
+      useFiles.getState().ensure(1, A);
+      await flush();
+      const p = useFiles.getState().byProject.get(1)!;
+      expect(p.expanded.has(pathKey(`${A}\\src`))).toBe(true);
+      expect(list.mock.calls.map((c) => c[0])).toEqual([A, `${A}\\src`]);
+      expect(p.open).toBe(`${A}\\src\\App.tsx`);
+      expect(p.file?.status).toBe("loaded");
+    });
+
+    it("ensure without a saved state lists only the root", async () => {
+      useFiles.getState().restore(new Map([[2, { expanded: [`${B}\\x`], open: null }]]));
+      useFiles.getState().ensure(1, A);
+      await flush();
+      expect(list.mock.calls.map((c) => c[0])).toEqual([A]);
+      expect(useFiles.getState().byProject.get(1)!.open).toBeNull();
+    });
+
+    it("forget drops the saved state and clears the key", async () => {
+      useFiles.getState().restore(new Map([[1, { expanded: [], open: null }]]));
+      useFiles.getState().ensure(1, A);
+      await flush();
+      useFiles.getState().forget(1);
+      expect(useFiles.getState().saved.has(1)).toBe(false);
+      expect(settingsSet).toHaveBeenCalledWith("files.1", "");
     });
   });
 });

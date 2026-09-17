@@ -272,6 +272,35 @@ pub fn set_title(root: &Path, id: &str, title: &str) -> Result<Vec<Task>, String
     Ok(file.tasks)
 }
 
+/// Plan-11 reordering: the index of `id` and of its nearest neighbour with
+/// the same status before (`delta < 0`) or after it — `None` at the edge.
+/// Shared with the Inbox, which orders by `position` instead of array index.
+pub fn swap_target(order: &[(String, Status)], id: &str, delta: i32) -> Result<Option<(usize, usize)>, String> {
+    let i = order
+        .iter()
+        .position(|(tid, _)| tid == id)
+        .ok_or_else(|| format!("no task \"{id}\""))?;
+    let status = order[i].1;
+    let j = if delta < 0 {
+        order[..i].iter().rposition(|(_, s)| *s == status)
+    } else {
+        order[i + 1..].iter().position(|(_, s)| *s == status).map(|k| i + 1 + k)
+    };
+    Ok(j.map(|j| (i, j)))
+}
+
+/// Swaps the task with its same-status neighbour in the file's array; a
+/// no-op at the column's edge.
+pub fn shift(root: &Path, id: &str, delta: i32) -> Result<Vec<Task>, String> {
+    let mut file = read_file(root)?;
+    let order: Vec<(String, Status)> = file.tasks.iter().map(|t| (t.id.clone(), t.status)).collect();
+    if let Some((i, j)) = swap_target(&order, id, delta)? {
+        file.tasks.swap(i, j);
+        write_file(root, &file)?;
+    }
+    Ok(file.tasks)
+}
+
 pub fn remove(root: &Path, id: &str) -> Result<Vec<Task>, String> {
     let mut file = read_file(root)?;
     let before = file.tasks.len();
@@ -412,6 +441,33 @@ mod tests {
         assert_eq!(set_title(tmp.path(), "t1", "  ").unwrap_err(), "empty title");
         assert_eq!(set_title(tmp.path(), "zz", "x").unwrap_err(), "no task \"zz\"");
         assert_eq!(read(tmp.path()), before, "file untouched on error");
+    }
+
+    #[test]
+    fn shift_swaps_within_a_status_and_stops_at_the_edges() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join(DIR_NAME)).unwrap();
+        // a(todo) b(doing) c(todo) d(todo): c's neighbours in the To do column are a and d.
+        fs::write(
+            file_path(tmp.path()),
+            "{ \"version\": 1, \"tasks\": [ \
+             { \"id\": \"a\", \"title\": \"a\", \"status\": \"todo\", \"created\": \"d\" }, \
+             { \"id\": \"b\", \"title\": \"b\", \"status\": \"doing\", \"created\": \"d\", \"notes\": \"n\" }, \
+             { \"id\": \"c\", \"title\": \"c\", \"status\": \"todo\", \"created\": \"d\" }, \
+             { \"id\": \"d\", \"title\": \"d\", \"status\": \"todo\", \"created\": \"d\" } ] }",
+        )
+        .unwrap();
+        let ids = |ts: &[Task]| ts.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+        let tasks = shift(tmp.path(), "c", -1).unwrap();
+        assert_eq!(ids(&tasks), ["c", "b", "a", "d"], "c skips over b (other status) to swap with a");
+        assert_eq!(tasks[1].extra["notes"], "n");
+        let tasks = shift(tmp.path(), "c", -1).unwrap();
+        assert_eq!(ids(&tasks), ["c", "b", "a", "d"], "top of the column: no-op");
+        let tasks = shift(tmp.path(), "a", 1).unwrap();
+        assert_eq!(ids(&tasks), ["c", "b", "d", "a"]);
+        let tasks = shift(tmp.path(), "b", 1).unwrap();
+        assert_eq!(ids(&tasks), ["c", "b", "d", "a"], "only card in its column: no-op");
+        assert_eq!(shift(tmp.path(), "zz", 1).unwrap_err(), "no task \"zz\"");
     }
 
     #[test]

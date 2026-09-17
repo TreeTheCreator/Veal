@@ -23,6 +23,24 @@
   --mono: "Geist Mono", "Cascadia Mono", Consolas, monospace;
   color-scheme: dark;
 }
+/* Light tokens, verbatim from the mockup (plan-11). System follows the OS
+   unless `data-theme` is set on <html>. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f4f4f6; --bg-sunk: #ffffff; --panel: #fafafb; --panel-2: #ececef;
+    --line: #e1e1e5; --line-strong: #cbcbd1; --text: #141416; --text-2: #55555d; --muted: #8a8a92;
+    --accent: #2f62d6; --accent-ink: #ffffff; --agent: #cf4a33; --agent-soft: rgba(207, 74, 51, 0.12);
+    --shell: #2f62d6; --shell-soft: rgba(47, 98, 214, 0.12); --ok: #2f8f52; --sel: rgba(0, 0, 0, 0.06);
+    --shadow: 0 16px 40px rgba(20, 20, 30, 0.18); color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f4f4f6; --bg-sunk: #ffffff; --panel: #fafafb; --panel-2: #ececef;
+  --line: #e1e1e5; --line-strong: #cbcbd1; --text: #141416; --text-2: #55555d; --muted: #8a8a92;
+  --accent: #2f62d6; --accent-ink: #ffffff; --agent: #cf4a33; --agent-soft: rgba(207, 74, 51, 0.12);
+  --shell: #2f62d6; --shell-soft: rgba(47, 98, 214, 0.12); --ok: #2f8f52; --sel: rgba(0, 0, 0, 0.06);
+  --shadow: 0 16px 40px rgba(20, 20, 30, 0.18); color-scheme: light;
+}
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
@@ -144,6 +162,7 @@ svg.i { flex: 0 0 auto; }
 .task .acts { margin-left: auto; display: flex; gap: 2px; }
 .task .acts button { padding: 1px 7px; border-radius: 5px; color: var(--text-2); }
 .task .acts button:hover { background: var(--panel-2); color: var(--text); }
+.task .acts button:disabled { opacity: 0.3; cursor: default; background: none; }
 .add-task { flex: 0 0 auto; display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--panel); }
 .add-task input[type=text] { flex: 1; }
 

@@ -5,6 +5,8 @@ import { db } from "../db";
 import type { PaneKind } from "../layout/tree";
 
 export type ShellChoice = "auto" | "pwsh" | "powershell" | "cmd" | "wsl";
+/** Plan-11: `system` follows the OS; the others pin `data-theme` on <html>. */
+export type Theme = "system" | "dark" | "light";
 
 export const SHELL_CHOICES: Array<{ value: ShellChoice; label: string }> = [
   { value: "auto", label: "Auto (pwsh, else powershell)" },
@@ -15,17 +17,31 @@ export const SHELL_CHOICES: Array<{ value: ShellChoice; label: string }> = [
 ];
 
 interface SettingsState {
+  theme: Theme;
   defaultKind: PaneKind;
   shell: ShellChoice;
   restoreLayout: boolean;
   /** Loads every key; returns the raw map so the caller can read `layout` too. */
   load(): Promise<Record<string, string>>;
+  setTheme(theme: Theme): void;
   setDefaultKind(kind: PaneKind): void;
   setShell(shell: ShellChoice): void;
   setRestoreLayout(on: boolean): void;
 }
 
 const isKind = (v: string | undefined): v is PaneKind => v === "shell" || v === "agent";
+export const isTheme = (v: string | undefined): v is Theme => v === "system" || v === "dark" || v === "light";
+
+/**
+ * Puts the theme on <html> synchronously — `system` means no attribute, the
+ * media query decides. Done here rather than in a React effect so that a
+ * pane's own effect (children run first) already sees the new tokens.
+ */
+export function applyTheme(theme: Theme): void {
+  if (typeof document === "undefined") return;
+  if (theme === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.dataset.theme = theme;
+}
 const isShell = (v: string | undefined): v is ShellChoice =>
   SHELL_CHOICES.some((c) => c.value === v);
 
@@ -34,13 +50,16 @@ function persist(key: string, value: string) {
 }
 
 export const useSettings = create<SettingsState>((set) => ({
+  theme: "system",
   defaultKind: "shell",
   shell: "auto",
   restoreLayout: true,
 
   async load() {
     const all = await db.settingsGetAll();
+    applyTheme(isTheme(all.theme) ? all.theme : "system");
     set({
+      theme: isTheme(all.theme) ? all.theme : "system",
       defaultKind: isKind(all.default_kind) ? all.default_kind : "shell",
       shell: isShell(all.shell) ? all.shell : "auto",
       restoreLayout: all.restore_layout !== "0",
@@ -48,6 +67,11 @@ export const useSettings = create<SettingsState>((set) => ({
     return all;
   },
 
+  setTheme(theme) {
+    applyTheme(theme);
+    set({ theme });
+    persist("theme", theme);
+  },
   setDefaultKind(defaultKind) {
     set({ defaultKind });
     persist("default_kind", defaultKind);

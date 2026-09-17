@@ -7,7 +7,7 @@ import type { Project } from "../db";
 import { tilde } from "../paths";
 import { selectActive, useProjects } from "../projects/store";
 import { STATUSES, type Task } from "../tasks/api";
-import { COLUMN_LABEL, columns, forward, isEmpty, today, type Card, type Source } from "../tasks/board";
+import { backward, COLUMN_LABEL, columns, forward, isEmpty, today, type Card, type Source } from "../tasks/board";
 import { useTasks, type ListState } from "../tasks/store";
 import { useUi } from "../ui";
 import { InlineInput } from "./InlineInput";
@@ -19,7 +19,7 @@ export function TasksView({ visible }: { visible: boolean }) {
   const active = useProjects(selectActive);
   const loaded = useProjects((s) => s.loaded);
   const showToast = useUi((s) => s.showToast);
-  const { byProject, inbox, load, add, setStatus, setTitle, remove, setScope } = useTasks();
+  const { byProject, inbox, load, add, setStatus, setTitle, shift, remove, setScope } = useTasks();
   // Plan-10: the one card whose title is being edited, keyed `project:id`.
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const scopeSetting = useTasks((s) => s.scope);
@@ -62,6 +62,8 @@ export function TasksView({ visible }: { visible: boolean }) {
   const onForward = (c: Card) =>
     void setStatus(c.project?.id ?? null, rootFor(c.project), c.task.id, forward(c.task.status));
   const onReopen = (c: Card) => void setStatus(c.project?.id ?? null, rootFor(c.project), c.task.id, "todo");
+  const onBack = (c: Card) => void setStatus(c.project?.id ?? null, rootFor(c.project), c.task.id, backward(c.task.status));
+  const onShift = (c: Card, delta: -1 | 1) => void shift(c.project?.id ?? null, rootFor(c.project), c.task.id, delta);
   const onRemove = (c: Card) => void remove(c.project?.id ?? null, rootFor(c.project), c.task.id);
   const cardKey = (c: Card) => `${c.project?.id ?? "inbox"}:${c.task.id}`;
   const onRename = async (c: Card, title: string): Promise<boolean> => {
@@ -110,7 +112,7 @@ export function TasksView({ visible }: { visible: boolean }) {
           Refresh
         </button>
         <span className="grow" />
-        <span className="hint">▸ moves a task forward · double-click a title to edit it</span>
+        <span className="hint">◂ ▸ move a task · ↑ ↓ reorder · double-click a title to edit it</span>
       </div>
 
       {errors.length > 0 && (
@@ -133,14 +135,19 @@ export function TasksView({ visible }: { visible: boolean }) {
                 <span>{COLUMN_LABEL[status]}</span>
                 <span className="n">{cols[status].length}</span>
               </div>
-              {cols[status].map((c) => (
+              {cols[status].map((c, i, all) => (
                 <TaskCard
                   key={cardKey(c)}
                   card={c}
                   editing={editingKey === cardKey(c)}
+                  // ↑/↓ swap within one source; a card is at an edge when no card of the same source is beside it.
+                  canUp={all.slice(0, i).some((o) => o.project?.id === c.project?.id)}
+                  canDown={all.slice(i + 1).some((o) => o.project?.id === c.project?.id)}
                   onEdit={() => setEditingKey(cardKey(c))}
                   onCancelEdit={() => setEditingKey(null)}
                   onRename={(title) => onRename(c, title)}
+                  onShift={(d) => onShift(c, d)}
+                  onBack={onBack}
                   onForward={onForward}
                   onReopen={onReopen}
                   onRemove={onRemove}
@@ -173,18 +180,26 @@ const emptyTitle = (v: string) => (v.trim() === "" ? "a task needs a title" : nu
 function TaskCard({
   card,
   editing,
+  canUp,
+  canDown,
   onEdit,
   onCancelEdit,
   onRename,
+  onShift,
+  onBack,
   onForward,
   onReopen,
   onRemove,
 }: {
   card: Card;
   editing: boolean;
+  canUp: boolean;
+  canDown: boolean;
   onEdit: () => void;
   onCancelEdit: () => void;
   onRename: (title: string) => Promise<boolean>;
+  onShift: (delta: -1 | 1) => void;
+  onBack: (c: Card) => void;
   onForward: (c: Card) => void;
   onReopen: (c: Card) => void;
   onRemove: (c: Card) => void;
@@ -202,6 +217,11 @@ function TaskCard({
         {!editing && (
           <span className="acts">
             <button title="Edit title" onClick={onEdit}>✎</button>
+            <button title="Move up" disabled={!canUp} onClick={() => onShift(-1)}>↑</button>
+            <button title="Move down" disabled={!canDown} onClick={() => onShift(1)}>↓</button>
+            {t.status !== "todo" && (
+              <button title="Move back" onClick={() => onBack(card)}>◂</button>
+            )}
             {t.status !== "done" ? (
               <button title="Move forward" onClick={() => onForward(card)}>▸</button>
             ) : (

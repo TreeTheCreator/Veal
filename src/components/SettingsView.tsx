@@ -8,7 +8,7 @@ import { AGENTS } from "../pty";
 import { SHELL_CHOICES, useSettings, type ShellChoice } from "../settings/store";
 
 export function SettingsView() {
-  const { defaultKind, shell, restoreLayout, setDefaultKind, setShell, setRestoreLayout } = useSettings();
+  const { theme, defaultKind, shell, restoreLayout, setTheme, setDefaultKind, setShell, setRestoreLayout } = useSettings();
   const [home, setHome] = useState("~");
 
   useEffect(() => {
@@ -23,6 +23,16 @@ export function SettingsView() {
         <span className="hint">Saved to veal.db</span>
       </div>
       <div className="sheet">
+        <div className="srow">
+          <div className="lbl"><b>Appearance</b><span>Follows the OS unless set here</span></div>
+          <div className="seg" role="radiogroup">
+            {(["system", "dark", "light"] as const).map((t) => (
+              <button key={t} className={theme === t ? "on" : ""} onClick={() => setTheme(t)}>
+                {t[0].toUpperCase() + t.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="srow">
           <div className="lbl"><b>Default pane type</b><span>Preselected when you open a new terminal</span></div>
           <div className="seg" role="radiogroup">
@@ -59,7 +69,7 @@ export function SettingsView() {
           <span className="mono">notify</span>
         </div>
         <div className="srow" style={{ border: 0 }}>
-          <div className="lbl"><b>Restore layout on launch</b><span>Reopens panes, cwds and weights</span></div>
+          <div className="lbl"><b>Restore layout on launch</b><span>Reopens panes, cwds and weights, and each project's file tree</span></div>
           <label>
             <input type="checkbox" checked={restoreLayout} onChange={(e) => setRestoreLayout(e.target.checked)} /> Enabled
           </label>

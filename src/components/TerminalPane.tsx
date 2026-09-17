@@ -13,6 +13,7 @@ import { basename, tilde } from "../paths";
 import { useLayout } from "../layout/store";
 import { projectForCwd, useProjects } from "../projects/store";
 import { shellForSpawn, useSettings } from "../settings/store";
+import { terminalTheme, useEffectiveMode } from "../theme";
 import { isViewShortcut } from "../ui";
 
 // Fallback when the container has no layout yet at first fit().
@@ -44,6 +45,7 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose, on
   const [error, setError] = useState<string | null>(null);
   // Sidebar project name for the header; basename when the pane is elsewhere.
   const projectName = useProjects((s) => projectForCwd(s.projects, cwd)?.name ?? basename(cwd));
+  const mode = useEffectiveMode();
 
   useEffect(() => {
     const host = hostRef.current;
@@ -55,12 +57,7 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose, on
       scrollback: 5000,
       cursorBlink: true,
       allowProposedApi: true,
-      theme: {
-        background: "#070708",
-        foreground: "#ececef",
-        cursor: "#7aa2ff",
-        selectionBackground: "rgba(255,255,255,0.07)",
-      },
+      theme: terminalTheme(),
       // Turns on xterm's ConPTY heuristics (scrollback on resize, no reflow).
       windowsPty: isWindows ? { backend: "conpty", buildNumber: 26200 } : undefined,
     });
@@ -159,6 +156,13 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose, on
       termRef.current = null;
     };
   }, [id, cwd]);
+
+  // Plan-11: xterm's palette follows the app's tokens. Declared after the
+  // mount effect so the first run sees the terminal; re-runs on mode change.
+  useEffect(() => {
+    const term = termRef.current;
+    if (term) term.options.theme = terminalTheme();
+  }, [mode]);
 
   useEffect(() => {
     if (focused) termRef.current?.focus();

@@ -28,5 +28,7 @@ export const tasks = {
     invoke<Task[]>("tasks_set_status", { root, id, status }),
   setTitle: (root: string | null, id: string, title: string) =>
     invoke<Task[]>("tasks_set_title", { root, id, title }),
+  /** ↑ (-1) / ↓ (+1) within the task's column; a no-op at the edge. */
+  shift: (root: string | null, id: string, delta: -1 | 1) => invoke<Task[]>("tasks_shift", { root, id, delta }),
   remove: (root: string | null, id: string) => invoke<Task[]>("tasks_remove", { root, id }),
 };

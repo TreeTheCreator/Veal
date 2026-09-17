@@ -5,6 +5,7 @@ const list = vi.fn<(root: string | null) => Promise<Task[]>>();
 const add = vi.fn<(root: string | null, title: string, created: string) => Promise<Task[]>>();
 const setStatus = vi.fn<(root: string | null, id: string, status: string) => Promise<Task[]>>();
 const setTitle = vi.fn<(root: string | null, id: string, title: string) => Promise<Task[]>>();
+const shift = vi.fn<(root: string | null, id: string, delta: number) => Promise<Task[]>>();
 const remove = vi.fn<(root: string | null, id: string) => Promise<Task[]>>();
 vi.mock("./api", () => ({
   tasks: {
@@ -12,6 +13,7 @@ vi.mock("./api", () => ({
     add: (r: string | null, t: string, c: string) => add(r, t, c),
     setStatus: (r: string | null, i: string, s: string) => setStatus(r, i, s),
     setTitle: (r: string | null, i: string, t: string) => setTitle(r, i, t),
+    shift: (r: string | null, i: string, d: number) => shift(r, i, d),
     remove: (r: string | null, i: string) => remove(r, i),
   },
 }));
@@ -25,7 +27,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
   useTasks.setState({ scope: "project", byProject: new Map(), inbox: { status: "loaded", tasks: [] } });
-  for (const fn of [list, add, setStatus, setTitle, remove]) fn.mockReset();
+  for (const fn of [list, add, setStatus, setTitle, shift, remove]) fn.mockReset();
   list.mockResolvedValue([t("a")]);
 });
 
@@ -138,6 +140,14 @@ describe("tasks store", () => {
     expect(touchesTasks(ROOT, [`${ROOT}\\.veal\\tasks.json`])).toBe(true);
     expect(touchesTasks(ROOT, [`${ROOT}\\.veal\\tasks.json.tmp`])).toBe(false);
     expect(touchesTasks(ROOT, [`${ROOT}\\x`])).toBe(false);
+  });
+
+  it("shift calls the API and replaces the list (plan-11)", async () => {
+    useTasks.setState({ byProject: new Map([[1, { status: "loaded", tasks: [t("a"), t("b")] }]]) });
+    shift.mockResolvedValueOnce([t("b"), t("a")]);
+    expect(await useTasks.getState().shift(1, ROOT, "b", -1)).toBe(true);
+    expect(shift).toHaveBeenCalledWith(ROOT, "b", -1);
+    expect(selectList(1)(useTasks.getState()).tasks.map((x) => x.id)).toEqual(["b", "a"]);
   });
 
   describe("setTitle (plan-10)", () => {

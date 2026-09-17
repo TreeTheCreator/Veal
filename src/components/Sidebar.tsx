@@ -7,6 +7,7 @@ import type { Project } from "../db";
 import { useLayout } from "../layout/store";
 import { PANE_CAP, panes, type PaneKind } from "../layout/tree";
 import { tilde } from "../paths";
+import { clampMenu } from "../menu";
 import { liveProjectIds, useProjects } from "../projects/store";
 import { useSettings } from "../settings/store";
 import { useUi } from "../ui";
@@ -149,7 +150,7 @@ export function Sidebar({ onAddProject }: Props) {
         <div
           className="ctx-menu"
           role="menu"
-          style={{ left: menu.x, top: menu.y }}
+          style={clampMenu(menu.x, menu.y, 1)}
           onPointerDown={(e) => e.stopPropagation()}
         >
           <button role="menuitem" onClick={() => unpin(menu.project)}>

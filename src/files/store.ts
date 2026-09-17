@@ -4,10 +4,12 @@
 // project's tree and drafts, unpinning forgets it, relaunch starts collapsed.
 import type { EditorState } from "@codemirror/state";
 import { create } from "zustand";
+import { db } from "../db";
 import { fs, type EntryKind, type FileText } from "../fs";
 import { basename } from "../paths";
 import { useUi } from "../ui";
 import { dropUnder, isUnder, rekeyProject } from "./rekey";
+import type { SavedFiles } from "./persist";
 import { flatten, pathKey, type DirState } from "./tree";
 import { affected, parentPath } from "./watch";
 
@@ -68,7 +70,13 @@ export type TreeEdit =
 interface FilesState {
   byProject: Map<number, ProjectFiles>;
   edit: TreeEdit | null;
-  /** Lists the root the first time a project is seen; a no-op afterwards. */
+  /** Tree state saved by an earlier run (plan-11), consumed by `ensure`. */
+  saved: Map<number, SavedFiles>;
+  restore(saved: Map<number, SavedFiles>): void;
+  /**
+   * Lists the root the first time a project is seen — and, with a saved
+   * state, expands its directories and opens its file; a no-op afterwards.
+   */
   ensure(projectId: number, root: string): void;
   toggleDir(projectId: number, path: string): void;
   openFile(projectId: number, path: string): void;
@@ -213,13 +221,23 @@ export const useFiles = create<FilesState>((set, get) => {
   return {
     byProject: new Map(),
     edit: null,
+    saved: new Map(),
+
+    restore(saved) {
+      set({ saved });
+    },
 
     ensure(projectId, root) {
       if (get().byProject.has(projectId)) return;
+      const saved = get().saved.get(projectId);
       const next = new Map(get().byProject);
-      next.set(projectId, empty(root));
+      next.set(projectId, { ...empty(root), expanded: new Set(saved?.expanded.map(pathKey) ?? []) });
       set({ byProject: next });
       list(projectId, root);
+      // Every saved directory is listed in parallel; the tree descends into
+      // each once its parent's entries arrive, so the order does not matter.
+      for (const dir of saved?.expanded ?? []) list(projectId, dir);
+      if (saved?.open) read(projectId, saved.open);
     },
 
     toggleDir(projectId, path) {
@@ -265,10 +283,16 @@ export const useFiles = create<FilesState>((set, get) => {
     },
 
     forget(projectId) {
-      if (!get().byProject.has(projectId)) return;
+      const saved = new Map(get().saved);
+      saved.delete(projectId);
+      if (!get().byProject.has(projectId)) {
+        set({ saved });
+        return;
+      }
       const next = new Map(get().byProject);
       next.delete(projectId);
-      set({ byProject: next });
+      set({ byProject: next, saved });
+      db.settingsSet(`files.${projectId}`, "").catch((e) => console.warn("files forget", e));
     },
 
     setEditing(projectId, path, on) {

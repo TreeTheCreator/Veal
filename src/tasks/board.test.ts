@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "./api";
-import { columns, forward, isEmpty, today } from "./board";
+import { backward, columns, forward, isEmpty, today } from "./board";
 
 const veal = { id: 1, name: "veal", path: "C:\\Users\\user\\veal" };
 const hungy = { id: 2, name: "hungy", path: "C:\\Users\\user\\hungy" };
@@ -31,6 +31,14 @@ describe("columns", () => {
     expect(isEmpty(columns([], "project"))).toBe(true);
     expect(isEmpty(columns([{ project: veal, tasks: [] }], "project"))).toBe(true);
     expect(isEmpty(columns([{ project: veal, tasks: [t("x", "done")] }], "project"))).toBe(false);
+  });
+});
+
+describe("backward", () => {
+  it("steps done → doing → todo and stays at todo", () => {
+    expect(backward("done")).toBe("doing");
+    expect(backward("doing")).toBe("todo");
+    expect(backward("todo")).toBe("todo");
   });
 });
 

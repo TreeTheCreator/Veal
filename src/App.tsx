@@ -14,6 +14,8 @@ import { SettingsView } from "./components/SettingsView";
 import { Sidebar } from "./components/Sidebar";
 import { TasksView } from "./components/TasksView";
 import { Toast } from "./components/Toast";
+import { parseAllFiles, startFilesPersistence } from "./files/persist";
+import { useFiles } from "./files/store";
 import { LAYOUT_KEY, parseLayout, startLayoutPersistence } from "./layout/persist";
 import { selectPaneCount, useLayout } from "./layout/store";
 import { PANE_CAP } from "./layout/tree";
@@ -31,7 +33,9 @@ let bootStarted = false;
 async function boot() {
   const [settings] = await Promise.all([useSettings.getState().load(), useProjects.getState().load()]);
   if (isView(settings[VIEW_KEY])) useUi.setState({ view: settings[VIEW_KEY] });
-  const restored = useSettings.getState().restoreLayout ? parseLayout(settings[LAYOUT_KEY]) : null;
+  const restoreOn = useSettings.getState().restoreLayout;
+  const restored = restoreOn ? parseLayout(settings[LAYOUT_KEY]) : null;
+  if (restoreOn) useFiles.getState().restore(parseAllFiles(settings));
   if (restored) {
     useLayout.setState(restored);
   } else {
@@ -39,6 +43,7 @@ async function boot() {
     if (active) useLayout.getState().addPane("shell", active.path);
   }
   startLayoutPersistence();
+  startFilesPersistence();
   startWatching();
 }
 

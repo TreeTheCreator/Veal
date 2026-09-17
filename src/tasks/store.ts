@@ -23,6 +23,7 @@ interface TasksState {
   add(projectId: number | null, root: string | null, title: string, created: string): Promise<boolean>;
   setStatus(projectId: number | null, root: string | null, id: string, status: Status): Promise<boolean>;
   setTitle(projectId: number | null, root: string | null, id: string, title: string): Promise<boolean>;
+  shift(projectId: number | null, root: string | null, id: string, delta: -1 | 1): Promise<boolean>;
   remove(projectId: number | null, root: string | null, id: string): Promise<boolean>;
   /**
    * Watcher batch for a project whose list has been loaded: re-reads it,
@@ -101,6 +102,10 @@ export const useTasks = create<TasksState>((set, get) => {
 
     setTitle(projectId, root, id, title) {
       return apply(projectId, root, () => tasks.setTitle(root, id, title), true);
+    },
+
+    shift(projectId, root, id, delta) {
+      return apply(projectId, root, () => tasks.shift(root, id, delta), true);
     },
 
     remove(projectId, root, id) {

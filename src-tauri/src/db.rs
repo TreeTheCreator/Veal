@@ -241,6 +241,31 @@ impl Db {
         Self::inbox_list_locked(&conn)
     }
 
+    /// Plan-11: swaps `position` with the same-status neighbour, like `tasks::shift`.
+    pub fn inbox_shift(&self, id: &str, delta: i32) -> Result<Vec<Task>, String> {
+        let conn = self.lock();
+        let mut stmt = conn
+            .prepare("SELECT id, status, position FROM tasks ORDER BY position")
+            .map_err(sql_err)?;
+        let rows: Vec<(String, String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(sql_err)?
+            .collect::<Result<_, _>>()
+            .map_err(sql_err)?;
+        drop(stmt);
+        let order: Vec<(String, Status)> = rows
+            .iter()
+            .map(|(id, s, _)| Status::parse(s).map(|st| (id.clone(), st)).map_err(|e| format!("inbox task \"{id}\": {e}")))
+            .collect::<Result<_, _>>()?;
+        if let Some((i, j)) = tasks::swap_target(&order, id, delta)? {
+            for (from, to) in [(i, j), (j, i)] {
+                conn.execute("UPDATE tasks SET position = ?1 WHERE id = ?2", params![rows[to].2, rows[from].0])
+                    .map_err(sql_err)?;
+            }
+        }
+        Self::inbox_list_locked(&conn)
+    }
+
     pub fn inbox_remove(&self, id: &str) -> Result<Vec<Task>, String> {
         let conn = self.lock();
         let changed = conn
@@ -417,6 +442,16 @@ mod tests {
         let tasks = db.inbox_remove(&tasks[1].id).unwrap();
         let titles: Vec<_> = tasks.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, ["renamed", "third"]);
+
+        // Reordering: "renamed" (done) and "third" (todo) are alone in their columns.
+        let tasks = db.inbox_add("fourth", "d").unwrap();
+        let tasks = db.inbox_shift(&tasks[2].id, -1).unwrap();
+        let titles: Vec<_> = tasks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["renamed", "fourth", "third"], "fourth swaps with third (both todo), over renamed (done)");
+        let tasks = db.inbox_shift(&tasks[1].id, -1).unwrap();
+        let titles: Vec<_> = tasks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["renamed", "fourth", "third"], "edge of the column: no-op");
+        assert_eq!(db.inbox_shift("zz", 1).unwrap_err(), "no task \"zz\"");
 
         assert_eq!(db.inbox_set_status("zz", Status::Done).unwrap_err(), "no task \"zz\"");
         assert_eq!(db.inbox_remove("zz").unwrap_err(), "no task \"zz\"");

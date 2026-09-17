@@ -8,6 +8,7 @@ import type { EntryKind } from "../fs";
 import { selectProject, useFiles, type DirtyFile } from "../files/store";
 import { flatten, pathKey, type Row } from "../files/tree";
 import { parentPath } from "../files/watch";
+import { clampMenu } from "../menu";
 import { basename, normalizePath, tilde } from "../paths";
 import { selectActive, useProjects } from "../projects/store";
 import { CodeViewer } from "./CodeViewer";
@@ -218,16 +219,6 @@ export function FilesView({ visible }: { visible: boolean }) {
       )}
     </>
   );
-}
-
-/** Keeps a context menu of `items` rows inside the window, so a row near the bottom edge still shows every item. */
-function clampMenu(x: number, y: number, items: number): { left: number; top: number } {
-  const width = 170;
-  const height = items * 32 + 10;
-  return {
-    left: Math.max(0, Math.min(x, window.innerWidth - width)),
-    top: Math.max(0, Math.min(y, window.innerHeight - height)),
-  };
 }
 
 /** `C:\Users\user\veal\src\App.tsx` under `C:\Users\user\veal` → `src/App.tsx`. */
