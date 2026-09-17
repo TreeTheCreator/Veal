@@ -4,6 +4,7 @@
 // back. All views stay mounted; inactive ones are hidden with `visibility`
 // so the terminal container keeps its size and no PTY is ever unmounted.
 import { useCallback, useEffect, useState } from "react";
+import { homeDir } from "@tauri-apps/api/path";
 import { Icon } from "./Icon";
 import { AddProjectModal } from "./components/AddProjectModal";
 import { CloseGuard } from "./components/CloseGuard";
@@ -19,7 +20,7 @@ import { useFiles } from "./files/store";
 import { LAYOUT_KEY, parseLayout, startLayoutPersistence } from "./layout/persist";
 import { selectPaneCount, useLayout } from "./layout/store";
 import { PANE_CAP } from "./layout/tree";
-import { tilde } from "./paths";
+import { setHome, tilde } from "./paths";
 import { selectActive, useProjects } from "./projects/store";
 import { useSettings } from "./settings/store";
 import { isView, TAB_VIEWS, useUi, VIEW_KEY, viewForShortcut, type View } from "./ui";
@@ -31,7 +32,12 @@ const TAB_LABEL: Record<View, string> = { terminal: "Terminal", files: "Files", 
 let bootStarted = false;
 
 async function boot() {
-  const [settings] = await Promise.all([useSettings.getState().load(), useProjects.getState().load()]);
+  const [settings] = await Promise.all([
+    useSettings.getState().load(),
+    useProjects.getState().load(),
+    // Paths under the profile display as `~`; shown whole until this resolves.
+    homeDir().then(setHome, (e) => console.warn("homeDir", e)),
+  ]);
   if (isView(settings[VIEW_KEY])) useUi.setState({ view: settings[VIEW_KEY] });
   const restoreOn = useSettings.getState().restoreLayout;
   const restored = restoreOn ? parseLayout(settings[LAYOUT_KEY]) : null;

@@ -38,10 +38,10 @@ export function TasksView({ visible }: { visible: boolean }) {
   }, [scope, active, projects, byProject, inbox]);
 
   const errors = useMemo(() => {
-    const out: Array<{ name: string; error: string }> = [];
+    const out: Array<{ key: string; name: string; error: string }> = [];
     for (const { project } of sources) {
       const s = project === null ? inbox : byProject.get(project.id);
-      if (s?.status === "error") out.push({ name: project?.name ?? "Inbox", error: s.error });
+      if (s?.status === "error") out.push({ key: String(project?.id ?? "inbox"), name: project?.name ?? "Inbox", error: s.error });
     }
     return out;
   }, [sources, byProject, inbox]);
@@ -118,7 +118,7 @@ export function TasksView({ visible }: { visible: boolean }) {
       {errors.length > 0 && (
         <div className="tasks-error">
           {errors.map((e) => (
-            <div key={e.name}>
+            <div key={e.key}>
               {e.name}: {e.error}
             </div>
           ))}

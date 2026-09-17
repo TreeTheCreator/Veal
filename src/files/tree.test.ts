@@ -110,5 +110,9 @@ describe("relativeTo", () => {
     const { relativeTo } = await import("../components/FilesView");
     expect(relativeTo(ROOT, `${ROOT}\\src\\App.tsx`)).toBe("src/App.tsx");
     expect(relativeTo("c:/users/user/veal/", "C:\\Users\\user\\VEAL\\x.md")).toBe("x.md");
+    expect(relativeTo(ROOT, ROOT)).toBe("");
+    // A sibling that merely shares the prefix is not under the root (plan-14).
+    expect(relativeTo(ROOT, `${ROOT}2\\x.md`)).toBe(`${ROOT}2\\x.md`.replace(/\\/g, "/"));
+    expect(relativeTo(ROOT, "D:\\elsewhere\\x.md")).toBe("D:/elsewhere/x.md");
   });
 });

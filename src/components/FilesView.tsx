@@ -221,10 +221,16 @@ export function FilesView({ visible }: { visible: boolean }) {
   );
 }
 
-/** `C:\Users\user\veal\src\App.tsx` under `C:\Users\user\veal` → `src/App.tsx`. */
+/**
+ * `C:\Users\user\veal\src\App.tsx` under `C:\Users\user\veal` → `src/App.tsx`.
+ * A path that is not under the root — a sibling like `…\veal2\x` included
+ * (plan-14) — comes back whole.
+ */
 export function relativeTo(root: string, path: string): string {
   const r = normalizePath(root);
   const p = normalizePath(path);
-  const rel = p.toLowerCase().startsWith(r.toLowerCase()) ? p.slice(r.length).replace(/^[\\/]+/, "") : p;
+  const under =
+    p.toLowerCase().startsWith(r.toLowerCase()) && (p.length === r.length || /[\\/]/.test(r.slice(-1)) || /[\\/]/.test(p[r.length]));
+  const rel = under ? p.slice(r.length).replace(/^[\\/]+/, "") : p;
   return rel.replace(/\\/g, "/");
 }

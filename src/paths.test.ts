@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { basename, deriveProject, joinPath, normalizePath, samePath, tilde } from "./paths";
+import { basename, deriveProject, joinPath, normalizePath, samePath, setHome, tilde } from "./paths";
 
 const HOME = "C:\\Users\\user";
 
@@ -24,9 +24,16 @@ describe("basename / tilde", () => {
     expect(basename("C:\\Users\\user\\veal\\")).toBe("veal");
     expect(basename("/home/u/veal")).toBe("veal");
   });
-  it("collapses the Windows profile to ~", () => {
+  it("collapses only the known profile to ~ (plan-14)", () => {
+    // Before boot has said which profile this is, nothing is folded.
+    expect(tilde("C:\\Users\\user\\veal")).toBe("C:\\Users\\user\\veal");
+    setHome("C:\\Users\\user\\");
     expect(tilde("C:\\Users\\user\\veal")).toBe("~\\veal");
+    expect(tilde("c:/users/USER/veal/src")).toBe("~\\veal\\src");
+    expect(tilde("C:\\Users\\user")).toBe("~");
     expect(tilde("D:\\work")).toBe("D:\\work");
+    expect(tilde("C:\\Users\\Public\\x")).toBe("C:\\Users\\Public\\x");
+    expect(tilde("C:\\Users\\user2\\x")).toBe("C:\\Users\\user2\\x");
   });
 });
 

@@ -60,6 +60,8 @@ function ensureExitListener() {
     const { id, code } = ev.payload;
     const handlers = exitHandlers.get(id);
     exitHandlers.delete(id);
+    // Nothing more comes for this pid (plan-14); the pane's own unsubscribe is null-safe.
+    agentHandlers.delete(id);
     if (handlers) handlers.forEach((cb) => cb(code));
     else earlyExits.set(id, code);
   });

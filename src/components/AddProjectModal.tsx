@@ -41,9 +41,14 @@ export function AddProjectModal({ onClose }: Props) {
       return;
     }
     let stale = false;
-    db.pathKind(r).then((k) => {
-      if (!stale) setKind(k);
-    });
+    db.pathKind(r).then(
+      (k) => {
+        if (!stale) setKind(k);
+      },
+      () => {
+        if (!stale) setKind(null);
+      },
+    );
     return () => {
       stale = true;
     };

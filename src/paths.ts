@@ -8,10 +8,25 @@ export function basename(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-/** Tauri only sets HOME-style tilde on unix; do it by hand for display. */
+let home = "";
+
+/** The profile directory `tilde` folds; `App.boot` sets it from Tauri's `homeDir()`. */
+export function setHome(dir: string): void {
+  home = normalizePath(dir);
+}
+
+/**
+ * `C:\Users\user\veal` → `~\veal`, for display. Only the known home is
+ * folded (plan-14): another profile, `Public`, or anything before
+ * `setHome` has run, is shown whole.
+ */
 export function tilde(path: string): string {
-  const m = path.match(/^([A-Za-z]:[\\/]Users[\\/][^\\/]+)(.*)$/);
-  return m ? `~${m[2]}` : path;
+  if (!home) return path;
+  const p = normalizePath(path).replace(/\//g, "\\");
+  const h = home.replace(/\//g, "\\");
+  if (p.toLowerCase() === h.toLowerCase()) return "~";
+  const prefix = `${h}\\`;
+  return p.toLowerCase().startsWith(prefix.toLowerCase()) ? `~\\${p.slice(prefix.length)}` : path;
 }
 
 /**
