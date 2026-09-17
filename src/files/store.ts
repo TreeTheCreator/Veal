@@ -4,7 +4,6 @@
 // project's tree and drafts, unpinning forgets it, relaunch starts collapsed.
 import type { EditorState } from "@codemirror/state";
 import { create } from "zustand";
-import { db } from "../db";
 import { fs, type EntryKind, type FileText } from "../fs";
 import { basename } from "../paths";
 import { useUi } from "../ui";
@@ -282,17 +281,14 @@ export const useFiles = create<FilesState>((set, get) => {
       if (file && p.open) read(projectId, p.open, true);
     },
 
+    // The `files.<id>` row goes with the project on the Rust side
+    // (`projects_remove`, plan-12), so nothing is written here.
     forget(projectId) {
       const saved = new Map(get().saved);
       saved.delete(projectId);
-      if (!get().byProject.has(projectId)) {
-        set({ saved });
-        return;
-      }
       const next = new Map(get().byProject);
       next.delete(projectId);
       set({ byProject: next, saved });
-      db.settingsSet(`files.${projectId}`, "").catch((e) => console.warn("files forget", e));
     },
 
     setEditing(projectId, path, on) {

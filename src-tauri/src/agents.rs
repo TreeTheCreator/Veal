@@ -21,6 +21,12 @@ use crate::pty::PtyRegistry;
 pub const AGENTS: [&str; 8] = ["claude", "codex", "aider", "gemini", "copilot", "amp", "goose", "opencode"];
 /// Interpreters whose *script* decides: `node …\gemini.js` is gemini.
 const INTERPRETERS: [&str; 6] = ["node", "bun", "deno", "python", "python3", "pythonw"];
+/// Package directories that are an agent under another name (plan-12):
+/// `…\node_modules\@anthropic-ai\claude-code\cli.js` is claude.
+const PACKAGES: [(&str, &str); 2] = [("claude-code", "claude"), ("gemini-cli", "gemini")];
+/// Only components after one of these count as a package name; anything
+/// before is the user's own tree (`C:\dev\claude\build.js` is not claude).
+const PACKAGE_ROOTS: [&str; 2] = ["node_modules", "site-packages"];
 pub const TICK: Duration = Duration::from_millis(1500);
 
 /// One process, as the poller sees it.
@@ -54,14 +60,35 @@ fn agent_named(stem: &str) -> Option<&'static str> {
     AGENTS.iter().copied().find(|a| *a == stem)
 }
 
+/// The agent a package directory names, if any: an agent's own name or
+/// one of `PACKAGES`.
+fn agent_packaged(component: &str) -> Option<&'static str> {
+    agent_named(component).or_else(|| PACKAGES.iter().find(|(pkg, _)| *pkg == component).map(|(_, a)| *a))
+}
+
+/// The agent an interpreter's script argument names: its stem, or a
+/// package directory on its path after the last `node_modules` /
+/// `site-packages` (the npm shim for claude runs `…\claude-code\cli.js`).
+pub fn agent_of_script(arg: &str) -> Option<&'static str> {
+    if let Some(a) = agent_named(&stem(arg)) {
+        return Some(a);
+    }
+    let components: Vec<String> = Path::new(arg)
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    let start = components.iter().rposition(|c| PACKAGE_ROOTS.contains(&c.as_str()))?;
+    components[start + 1..].iter().find_map(|c| agent_packaged(c))
+}
+
 /// The agent a single process is, if any: by exe stem, or for an
-/// interpreter by the stem of any argument (`…\gemini.js`).
+/// interpreter by any argument (`agent_of_script`).
 pub fn agent_of(p: &Proc) -> Option<&'static str> {
     if let Some(a) = agent_named(&p.name) {
         return Some(a);
     }
     if INTERPRETERS.contains(&p.name.as_str()) {
-        return p.cmd.iter().skip(1).find_map(|arg| agent_named(&stem(arg)));
+        return p.cmd.iter().skip(1).find_map(|arg| agent_of_script(arg));
     }
     None
 }
@@ -212,6 +239,22 @@ mod tests {
         assert_eq!(detect(&t, 30), None);
         // Another root's agent is not ours.
         assert_eq!(detect(&t, 20), None);
+    }
+
+    #[test]
+    fn interpreter_scripts_match_by_package_directory() {
+        // Plan-12: the npm shim for claude is `cli.js` under the package dir.
+        assert_eq!(agent_of_script(r"C:\Users\u\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js"), Some("claude"));
+        assert_eq!(agent_of_script(r"C:\npm\node_modules\@openai\codex\bin\codex.js"), Some("codex"));
+        assert_eq!(agent_of_script(r"C:\npm\node_modules\@google\gemini-cli\dist\index.js"), Some("gemini"));
+        assert_eq!(agent_of_script(r"C:\py\Lib\site-packages\aider\__main__.py"), Some("aider"));
+        assert_eq!(agent_of_script("/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"), Some("claude"));
+        // The user's own tree never matches; only the part after node_modules does.
+        assert_eq!(agent_of_script(r"C:\dev\claude\build.js"), None);
+        assert_eq!(agent_of_script(r"C:\dev\claude\node_modules\vite\bin\vite.js"), None);
+        assert_eq!(agent_of_script(r"C:\dev\claude-experiments\node_modules\esbuild\bin\esbuild"), None);
+        let node = p(2, Some(1), "node.exe", &["node", r"C:\npm\node_modules\@anthropic-ai\claude-code\cli.js"]);
+        assert_eq!(agent_of(&node), Some("claude"));
     }
 
     #[test]

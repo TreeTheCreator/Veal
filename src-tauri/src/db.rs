@@ -19,6 +19,11 @@ const SCHEMA_VERSION: u32 = 2;
 
 pub const KEY_ACTIVE_PROJECT: &str = "active_project";
 
+/// The settings key holding a project's saved Files tree (src/files/persist.ts).
+pub fn files_key(id: u32) -> String {
+    format!("files.{id}")
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Project {
     pub id: u32,
@@ -119,7 +124,9 @@ impl Db {
         }
     }
 
-    /// Unpins a project. Clears `active_project` if it pointed here.
+    /// Unpins a project. Clears `active_project` if it pointed here, and
+    /// the project's saved Files tree (`files.<id>`, plan-11) — ids are
+    /// reused by SQLite, so a row left behind would land on the next pin.
     pub fn projects_remove(&self, id: u32) -> Result<(), String> {
         let conn = self.lock();
         conn.execute("DELETE FROM projects WHERE id = ?1", [id])
@@ -129,6 +136,8 @@ impl Db {
             params![KEY_ACTIVE_PROJECT, id.to_string()],
         )
         .map_err(sql_err)?;
+        conn.execute("DELETE FROM settings WHERE key = ?1", [files_key(id)])
+            .map_err(sql_err)?;
         Ok(())
     }
 
@@ -390,6 +399,23 @@ mod tests {
         db.projects_remove(p.id).unwrap();
         assert!(db.projects_list().unwrap().is_empty());
         assert_eq!(db.settings_get(KEY_ACTIVE_PROJECT).unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Plan-12: SQLite reuses the highest id, so the saved tree must go
+    /// with the project or the next pin inherits it.
+    #[test]
+    fn remove_clears_files_key_so_a_reused_id_starts_clean() {
+        let db = Db::open_in_memory().unwrap();
+        let dir = tmp_dir("remove-files");
+        let p = db.projects_add("x", &dir).unwrap();
+        db.settings_set(&files_key(p.id), r#"{"expanded":["x"],"open":null}"#).unwrap();
+        db.settings_set(&files_key(p.id + 1), "other").unwrap();
+        db.projects_remove(p.id).unwrap();
+        assert_eq!(db.settings_get(&files_key(p.id)).unwrap(), None);
+        assert_eq!(db.settings_get(&files_key(p.id + 1)).unwrap().as_deref(), Some("other"));
+        let again = db.projects_add("y", &dir).unwrap();
+        assert_eq!(again.id, p.id, "the id is reused, which is the point");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

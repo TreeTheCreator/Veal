@@ -486,13 +486,16 @@ describe("editing and drafts", () => {
       expect(useFiles.getState().byProject.get(1)!.open).toBeNull();
     });
 
-    it("forget drops the saved state and clears the key", async () => {
-      useFiles.getState().restore(new Map([[1, { expanded: [], open: null }]]));
+    it("forget drops the saved state, visited or not; Rust clears the row (plan-12)", async () => {
+      useFiles.getState().restore(new Map([[1, { expanded: [], open: null }], [2, { expanded: [], open: null }]]));
       useFiles.getState().ensure(1, A);
       await flush();
       useFiles.getState().forget(1);
+      useFiles.getState().forget(2);
       expect(useFiles.getState().saved.has(1)).toBe(false);
-      expect(settingsSet).toHaveBeenCalledWith("files.1", "");
+      expect(useFiles.getState().saved.has(2)).toBe(false);
+      expect(useFiles.getState().byProject.has(1)).toBe(false);
+      expect(settingsSet).not.toHaveBeenCalled();
     });
   });
 });

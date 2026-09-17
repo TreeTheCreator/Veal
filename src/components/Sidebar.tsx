@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { Icon } from "../Icon";
 import type { Project } from "../db";
+import { useFiles, type DirtyFile } from "../files/store";
 import { useLayout } from "../layout/store";
 import { PANE_CAP, panes, type PaneKind } from "../layout/tree";
 import { tilde } from "../paths";
@@ -11,6 +12,7 @@ import { clampMenu } from "../menu";
 import { liveProjectIds, useProjects } from "../projects/store";
 import { useSettings } from "../settings/store";
 import { useUi } from "../ui";
+import { relativeTo } from "./FilesView";
 import { TypePopover } from "./TypePopover";
 
 interface Props {
@@ -21,6 +23,12 @@ interface Menu {
   x: number;
   y: number;
   project: Project;
+}
+
+/** An unpin held back by unsaved edits (plan-12); the modal decides. */
+interface PendingUnpin {
+  project: Project;
+  dirty: DirtyFile[];
 }
 
 export function Sidebar({ onAddProject }: Props) {
@@ -41,6 +49,7 @@ export function Sidebar({ onAddProject }: Props) {
 
   const [spawnFor, setSpawnFor] = useState<number | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
+  const [pending, setPending] = useState<PendingUnpin | null>(null);
 
   useEffect(() => {
     if (!menu) return;
@@ -62,14 +71,32 @@ export function Sidebar({ onAddProject }: Props) {
     if (addPane(kind, project.path) === null) showToast(`Soft cap of ${PANE_CAP} reached`);
   };
 
+  useEffect(() => {
+    if (!pending) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPending(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [pending]);
+
   const unpin = async (project: Project) => {
-    setMenu(null);
+    setPending(null);
     try {
       await remove(project.id);
       showToast(`Unpinned ${project.name}`);
     } catch (e) {
       showToast(`Could not unpin: ${String(e)}`);
     }
+  };
+
+  // Unpinning forgets the project's drafts, so unsaved edits get the same
+  // gate as deleting a file or quitting: a modal, never a silent drop.
+  const requestUnpin = (project: Project) => {
+    setMenu(null);
+    const dirty = useFiles.getState().dirtyFiles().filter((d) => d.projectId === project.id);
+    if (dirty.length) setPending({ project, dirty });
+    else void unpin(project);
   };
 
   const onContextMenu = (e: MouseEvent, project: Project) => {
@@ -153,9 +180,36 @@ export function Sidebar({ onAddProject }: Props) {
           style={clampMenu(menu.x, menu.y, 1)}
           onPointerDown={(e) => e.stopPropagation()}
         >
-          <button role="menuitem" onClick={() => unpin(menu.project)}>
+          <button role="menuitem" onClick={() => requestUnpin(menu.project)}>
             Unpin {menu.project.name}
           </button>
+        </div>
+      )}
+
+      {pending && (
+        <div className="scrim open" onPointerDown={(e) => e.target === e.currentTarget && setPending(null)}>
+          <div className="modal" role="dialog" aria-modal="true">
+            <h3>Unpin {pending.project.name}?</h3>
+            <div className="field">
+              <span>
+                {pending.dirty.length === 1 ? "A file has" : `${pending.dirty.length} files have`} unsaved changes. Unpinning
+                drops them; Ctrl+S first to keep them.
+              </span>
+              <ul className="dirty-list mono">
+                {pending.dirty.map((d) => (
+                  <li key={d.path}>{relativeTo(d.root, d.path)}</li>
+                ))}
+              </ul>
+            </div>
+            <div className="row">
+              <button type="button" className="btn ghost" onClick={() => setPending(null)} autoFocus>
+                Cancel
+              </button>
+              <button type="button" className="btn" onClick={() => unpin(pending.project)}>
+                Discard and unpin
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </aside>

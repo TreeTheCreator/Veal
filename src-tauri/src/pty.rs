@@ -31,7 +31,9 @@ pub struct SpawnOptions {
 
 struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// Its own lock (plan-12): a write blocks when the child stops reading
+    /// its pipe, and that must not hold `panes` against every other pane.
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// The shell's pid; agent detection walks its descendants.
     pid: Option<u32>,
@@ -116,7 +118,7 @@ impl PtyRegistry {
             id,
             PtyHandle {
                 master: pair.master,
-                writer,
+                writer: Arc::new(Mutex::new(writer)),
                 killer,
                 pid,
             },
@@ -163,11 +165,16 @@ impl PtyRegistry {
         Ok(id)
     }
 
+    /// Writes to the child. The registry lock is held only to find the
+    /// writer; the I/O itself happens under the pane's own lock.
     pub fn write(&self, id: u32, data: &[u8]) -> Result<(), String> {
-        let mut panes = self.panes.lock().unwrap();
-        let h = panes.get_mut(&id).ok_or_else(|| no_pty(id))?;
-        h.writer.write_all(data).map_err(|e| e.to_string())?;
-        h.writer.flush().map_err(|e| e.to_string())
+        let writer = {
+            let panes = self.panes.lock().unwrap();
+            Arc::clone(&panes.get(&id).ok_or_else(|| no_pty(id))?.writer)
+        };
+        let mut w = writer.lock().unwrap_or_else(|p| p.into_inner());
+        w.write_all(data).map_err(|e| e.to_string())?;
+        w.flush().map_err(|e| e.to_string())
     }
 
     pub fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {
