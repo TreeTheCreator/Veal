@@ -169,6 +169,27 @@ fn fs_write(
     fs::write(&confined, &text, crlf, bom, expected_mtime)
 }
 
+// The confined path is canonical (`\\?\C:\…` on Windows); JS keeps the
+// path it sent, so the new path is built from that, not from the result.
+#[tauri::command]
+fn fs_create(db: State<'_, Db>, dir: String, name: String, kind: String) -> Result<String, String> {
+    fs::create(&fs::confine(&db, &dir)?, &name, &kind)?;
+    Ok(std::path::Path::new(dir.trim()).join(&name).to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn fs_rename(db: State<'_, Db>, path: String, name: String) -> Result<String, String> {
+    fs::rename(&fs::confine(&db, &path)?, &name)?;
+    let src = std::path::Path::new(path.trim());
+    let parent = src.parent().ok_or_else(|| format!("no parent: {path}"))?;
+    Ok(parent.join(&name).to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn fs_delete(db: State<'_, Db>, path: String) -> Result<(), String> {
+    fs::delete(&fs::confine(&db, &path)?)
+}
+
 // ---- tasks view (src/tasks.rs + the Inbox in src/db.rs) ----
 // `root: None` is the Inbox; `Some` is a pinned project root. The lock
 // serialises the file read-modify-write across commands.
@@ -272,6 +293,9 @@ pub fn run() {
             fs_list,
             fs_read,
             fs_write,
+            fs_create,
+            fs_rename,
+            fs_delete,
             tasks_list,
             tasks_add,
             tasks_set_status,

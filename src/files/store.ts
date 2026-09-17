@@ -4,10 +4,12 @@
 // project's tree and drafts, unpinning forgets it, relaunch starts collapsed.
 import type { EditorState } from "@codemirror/state";
 import { create } from "zustand";
-import { fs, type FileText } from "../fs";
+import { fs, type EntryKind, type FileText } from "../fs";
+import { basename } from "../paths";
 import { useUi } from "../ui";
+import { dropUnder, isUnder, rekeyProject } from "./rekey";
 import { flatten, pathKey, type DirState } from "./tree";
-import { affected } from "./watch";
+import { affected, parentPath } from "./watch";
 
 /** A watcher batch (`fs-changed`); `paths: null` means refresh everything shown. */
 export interface Batch {
@@ -58,8 +60,14 @@ export interface DirtyFile {
   path: string;
 }
 
+/** An inline name edit in the tree (plan-09); one at a time, app-wide. */
+export type TreeEdit =
+  | { mode: "create"; projectId: number; dir: string; kind: EntryKind }
+  | { mode: "rename"; projectId: number; path: string };
+
 interface FilesState {
   byProject: Map<number, ProjectFiles>;
+  edit: TreeEdit | null;
   /** Lists the root the first time a project is seen; a no-op afterwards. */
   ensure(projectId: number, root: string): void;
   toggleDir(projectId: number, path: string): void;
@@ -80,6 +88,18 @@ interface FilesState {
   /** Drops the draft and edit mode, then re-reads. */
   discard(projectId: number, path: string): void;
   dirtyFiles(): DirtyFile[];
+  /** Dirty files at or under `path` (a file or a directory) in one project. */
+  dirtyUnder(projectId: number, path: string): DirtyFile[];
+  /** Opens an inline create row inside `dir`, expanding it first if needed. */
+  startCreate(projectId: number, dir: string, kind: EntryKind): void;
+  startRename(projectId: number, path: string): void;
+  cancelEdit(): void;
+  /** Creates, re-lists `dir`, and opens a new file. False (and a toast) on error; the edit row stays. */
+  create(projectId: number, dir: string, name: string, kind: EntryKind): Promise<boolean>;
+  /** Renames, re-keys everything under the old path, re-lists the parent. */
+  rename(projectId: number, path: string, name: string): Promise<boolean>;
+  /** Moves to the Recycle Bin, drops state under the path, re-lists the parent. */
+  remove(projectId: number, path: string): Promise<boolean>;
 }
 
 const empty = (root: string): ProjectFiles => ({
@@ -188,8 +208,11 @@ export const useFiles = create<FilesState>((set, get) => {
     );
   };
 
+  const toast = (msg: string) => useUi.getState().showToast(msg);
+
   return {
     byProject: new Map(),
+    edit: null,
 
     ensure(projectId, root) {
       if (get().byProject.has(projectId)) return;
@@ -325,6 +348,77 @@ export const useFiles = create<FilesState>((set, get) => {
         for (const d of p.drafts.values()) out.push({ projectId, root: p.root, path: d.path });
       }
       return out;
+    },
+
+    dirtyUnder(projectId, path) {
+      const p = get().byProject.get(projectId);
+      if (!p) return [];
+      const under = pathKey(path);
+      return [...p.drafts]
+        .filter(([k]) => isUnder(k, under))
+        .map(([, d]) => ({ projectId, root: p.root, path: d.path }));
+    },
+
+    startCreate(projectId, dir, kind) {
+      const p = get().byProject.get(projectId);
+      if (!p) return;
+      const key = pathKey(dir);
+      if (key !== pathKey(p.root) && !p.expanded.has(key)) get().toggleDir(projectId, dir);
+      set({ edit: { mode: "create", projectId, dir, kind } });
+    },
+
+    startRename(projectId, path) {
+      if (!get().byProject.has(projectId)) return;
+      set({ edit: { mode: "rename", projectId, path } });
+    },
+
+    cancelEdit() {
+      if (get().edit) set({ edit: null });
+    },
+
+    async create(projectId, dir, name, kind) {
+      try {
+        const path = await fs.create(dir, name, kind);
+        set({ edit: null });
+        list(projectId, dir);
+        if (kind === "file") read(projectId, path);
+        return true;
+      } catch (e) {
+        toast(String(e));
+        return false;
+      }
+    },
+
+    async rename(projectId, path, name) {
+      if (name === basename(path)) {
+        set({ edit: null });
+        return true;
+      }
+      try {
+        const to = await fs.rename(path, name);
+        set({ edit: null });
+        patch(projectId, (p) => rekeyProject(p, path, to));
+        const parent = parentPath(path);
+        if (parent) list(projectId, parent);
+        return true;
+      } catch (e) {
+        toast(String(e));
+        return false;
+      }
+    },
+
+    async remove(projectId, path) {
+      try {
+        await fs.delete(path);
+        patch(projectId, (p) => dropUnder(p, path));
+        const parent = parentPath(path);
+        if (parent) list(projectId, parent);
+        toast(`Moved ${basename(path)} to the Recycle Bin`);
+        return true;
+      } catch (e) {
+        toast(`Delete failed: ${String(e)}`);
+        return false;
+      }
     },
   };
 });

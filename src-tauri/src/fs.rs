@@ -1,7 +1,8 @@
 //! Filesystem access for the Files view: list one directory, read one file,
-//! write one file back (plan-06). Own commands rather than `tauri-plugin-fs`
-//! for the same reason `db.rs` is not `tauri-plugin-sql` — three calls do
-//! not need a scoped plugin.
+//! write one file back (plan-06), create / rename / delete an entry
+//! (plan-09). Own commands rather than `tauri-plugin-fs` for the same
+//! reason `db.rs` is not `tauri-plugin-sql` — a handful of calls do not
+//! need a scoped plugin.
 //!
 //! Every command is confined to pinned project roots (plan-04, decision 4).
 //! The webview only ever runs our own code, so this is hardening, not a
@@ -149,6 +150,95 @@ pub fn write(
     })
 }
 
+// ---- create / rename / delete (plan-09) ----
+
+const RESERVED: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1",
+    "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// Windows-strict on every platform (decision 3): a name a teammate on
+/// Windows cannot check out is not a name. Mirrored in src/files/names.ts.
+pub fn validate_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("name is empty".into());
+    }
+    if name != name.trim() {
+        return Err("no leading or trailing spaces".into());
+    }
+    if name == "." || name == ".." {
+        return Err("not a valid name".into());
+    }
+    if name.contains(['\\', '/']) {
+        return Err("no slashes in a name".into());
+    }
+    if let Some(c) = name.chars().find(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') || c.is_control()) {
+        return Err(if c.is_control() { "no control characters".into() } else { format!("{c} is not allowed in a name") });
+    }
+    if name.ends_with('.') {
+        return Err("a name cannot end with a dot".into());
+    }
+    if name.len() > 255 {
+        return Err("name is too long".into());
+    }
+    let stem = name.split('.').next().unwrap_or("").to_lowercase();
+    if RESERVED.contains(&stem.as_str()) {
+        return Err(format!("{} is a reserved name on Windows", stem.to_uppercase()));
+    }
+    Ok(())
+}
+
+/// Creates an empty file or a directory named `name` in `dir`; refuses an
+/// existing entry. Returns the new path.
+pub fn create(dir: &Path, name: &str, kind: &str) -> Result<PathBuf, String> {
+    validate_name(name)?;
+    let path = dir.join(name);
+    let exists = || format!("already exists: {name}");
+    match kind {
+        "dir" => {
+            if path.exists() {
+                return Err(exists());
+            }
+            std::fs::create_dir(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
+        }
+        "file" => {
+            std::fs::File::create_new(&path).map_err(|e| match e.kind() {
+                std::io::ErrorKind::AlreadyExists => exists(),
+                _ => format!("create {}: {e}", path.display()),
+            })?;
+        }
+        other => return Err(format!("unknown kind: {other}")),
+    }
+    Ok(path)
+}
+
+/// Renames `path` to a sibling called `name`. An existing sibling is
+/// refused — unless it is this very entry under a different case
+/// (decision 7), which a case-insensitive filesystem renames in place.
+pub fn rename(path: &Path, name: &str) -> Result<PathBuf, String> {
+    validate_name(name)?;
+    let parent = path.parent().ok_or_else(|| format!("no parent: {}", path.display()))?;
+    let target = parent.join(name);
+    let same_entry = path
+        .file_name()
+        .map(|f| f.to_string_lossy().to_lowercase() == name.to_lowercase())
+        .unwrap_or(false);
+    if target.exists() && !same_entry {
+        return Err(format!("already exists: {name}"));
+    }
+    std::fs::rename(path, &target).map_err(|e| format!("rename {}: {e}", path.display()))?;
+    Ok(target)
+}
+
+/// Moves `path` to the Recycle Bin (decision 1). Not unit-tested — it would
+/// fill the developer's bin on every `cargo test`; acceptance covers it.
+pub fn delete(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err("not found".into());
+    }
+    trash::delete(path).map_err(|e| format!("delete {}: {e}", path.display()))
+}
+
 /// The canonical form of `path` if it lies under a pinned project root.
 pub fn confine(db: &Db, path: &str) -> Result<PathBuf, String> {
     let outside = || format!("outside pinned projects: {path}");
@@ -186,6 +276,77 @@ mod tests {
         assert_eq!(names(&entries), ["A", "b", "B.txt", "z.txt"]);
         assert_eq!(entries[0].kind, "dir");
         assert_eq!(entries[2], Entry { name: "B.txt".into(), kind: "file", size: 2 });
+    }
+
+    #[test]
+    fn validate_name_is_windows_strict() {
+        for ok in ["a.txt", ".gitignore", "émoji 🐟.md", "console.log", "connect.rs", "nulls.md"] {
+            assert_eq!(validate_name(ok), Ok(()), "{ok}");
+        }
+        let bad = [
+            ("", "name is empty"),
+            (" ", "name is empty"),
+            (" a", "no leading or trailing spaces"),
+            ("a ", "no leading or trailing spaces"),
+            (".", "not a valid name"),
+            ("..", "not a valid name"),
+            ("a/b", "no slashes in a name"),
+            ("a\\b", "no slashes in a name"),
+            ("a:b", ": is not allowed in a name"),
+            ("a?b", "? is not allowed in a name"),
+            ("a\tb", "no control characters"),
+            ("con", "CON is a reserved name on Windows"),
+            ("CON.txt", "CON is a reserved name on Windows"),
+            ("lpt1", "LPT1 is a reserved name on Windows"),
+            ("a.", "a name cannot end with a dot"),
+        ];
+        for (name, err) in bad {
+            assert_eq!(validate_name(name), Err(err.into()), "{name:?}");
+        }
+        assert_eq!(validate_name(&"x".repeat(256)), Err("name is too long".into()));
+        assert_eq!(validate_name(&"x".repeat(255)), Ok(()));
+    }
+
+    #[test]
+    fn create_file_and_dir_refuse_duplicates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = create(tmp.path(), "a.txt", "file").unwrap();
+        assert_eq!(f, tmp.path().join("a.txt"));
+        assert_eq!(fs::metadata(&f).unwrap().len(), 0);
+        let d = create(tmp.path(), "sub", "dir").unwrap();
+        assert!(d.is_dir());
+        assert_eq!(create(tmp.path(), "a.txt", "file"), Err("already exists: a.txt".into()));
+        assert_eq!(create(tmp.path(), "sub", "dir"), Err("already exists: sub".into()));
+        assert_eq!(create(tmp.path(), "a.txt", "dir"), Err("already exists: a.txt".into()));
+        assert!(create(tmp.path(), "con", "file").is_err());
+        assert!(create(tmp.path(), "x", "link").is_err());
+        assert_eq!(names(&list(tmp.path()).unwrap()), ["sub", "a.txt"]);
+    }
+
+    #[test]
+    fn rename_moves_refuses_clobber_and_allows_case_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("readme.md"), "r").unwrap();
+        fs::write(tmp.path().join("other.md"), "o").unwrap();
+        fs::create_dir(tmp.path().join("src")).unwrap();
+        fs::write(tmp.path().join("src").join("a.rs"), "a").unwrap();
+
+        let moved = rename(&tmp.path().join("readme.md"), "notes.md").unwrap();
+        assert_eq!(moved, tmp.path().join("notes.md"));
+        assert_eq!(fs::read_to_string(&moved).unwrap(), "r");
+        assert!(!tmp.path().join("readme.md").exists());
+
+        assert_eq!(rename(&tmp.path().join("notes.md"), "other.md"), Err("already exists: other.md".into()));
+        assert_eq!(fs::read_to_string(tmp.path().join("other.md")).unwrap(), "o");
+        assert_eq!(fs::read_to_string(tmp.path().join("notes.md")).unwrap(), "r");
+
+        let cased = rename(&tmp.path().join("notes.md"), "NOTES.md").unwrap();
+        assert!(names(&list(tmp.path()).unwrap()).contains(&"NOTES.md"));
+        assert_eq!(fs::read_to_string(&cased).unwrap(), "r");
+
+        let dir = rename(&tmp.path().join("src"), "lib").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("a.rs")).unwrap(), "a");
+        assert!(rename(&tmp.path().join("missing"), "x").is_err());
     }
 
     #[test]

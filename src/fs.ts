@@ -36,4 +36,10 @@ export const fs = {
   read: (path: string) => invoke<FileText>("fs_read", { path }),
   write: (path: string, text: string, o: WriteOptions) =>
     invoke<Written>("fs_write", { path, text, crlf: o.crlf, bom: o.bom, expectedMtime: o.expectedMtime }),
+  /** Resolves to the new entry's path. */
+  create: (dir: string, name: string, kind: EntryKind) => invoke<string>("fs_create", { dir, name, kind }),
+  /** Resolves to the renamed entry's path. */
+  rename: (path: string, name: string) => invoke<string>("fs_rename", { path, name }),
+  /** To the Recycle Bin. */
+  delete: (path: string) => invoke<void>("fs_delete", { path }),
 };

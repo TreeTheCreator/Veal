@@ -5,8 +5,18 @@ import { EditorState } from "@codemirror/state";
 const list = vi.fn<(dir: string) => Promise<unknown>>();
 const read = vi.fn<(path: string) => Promise<unknown>>();
 const write = vi.fn<(path: string, text: string, o: unknown) => Promise<unknown>>();
+const create = vi.fn<(dir: string, name: string, kind: string) => Promise<string>>();
+const rename = vi.fn<(path: string, name: string) => Promise<string>>();
+const del = vi.fn<(path: string) => Promise<void>>();
 vi.mock("../fs", () => ({
-  fs: { list: (d: string) => list(d), read: (p: string) => read(p), write: (p: string, t: string, o: unknown) => write(p, t, o) },
+  fs: {
+    list: (d: string) => list(d),
+    read: (p: string) => read(p),
+    write: (p: string, t: string, o: unknown) => write(p, t, o),
+    create: (d: string, n: string, k: string) => create(d, n, k),
+    rename: (p: string, n: string) => rename(p, n),
+    delete: (p: string) => del(p),
+  },
 }));
 const showToast = vi.fn();
 vi.mock("../ui", () => ({ useUi: { getState: () => ({ showToast }) } }));
@@ -24,7 +34,8 @@ const file = (name: string) => ({ name, kind: "file", size: 3 });
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
-  useFiles.setState({ byProject: new Map() });
+  useFiles.setState({ byProject: new Map(), edit: null });
+  for (const fn of [create, rename, del]) fn.mockReset();
   list.mockReset();
   read.mockReset();
   list.mockImplementation(async (d) => (d.endsWith("src") ? [file("App.tsx")] : [dir("src"), file("x.md")]));
@@ -353,6 +364,102 @@ describe("editing and drafts", () => {
       await flush();
       expect(list.mock.calls.map((c) => c[0])).toEqual([A, `${A}\\src`]);
       expect(read).toHaveBeenCalledWith(F);
+    });
+  });
+
+  describe("create / rename / delete (plan-09)", () => {
+    const SRC = `${A}\\src`;
+
+    it("startCreate on a collapsed directory expands it and opens the edit row", async () => {
+      useFiles.getState().ensure(1, A);
+      await flush();
+      list.mockClear();
+      useFiles.getState().startCreate(1, SRC, "file");
+      expect(useFiles.getState().byProject.get(1)!.expanded.has(pathKey(SRC))).toBe(true);
+      expect(list).toHaveBeenCalledWith(SRC);
+      expect(useFiles.getState().edit).toEqual({ mode: "create", projectId: 1, dir: SRC, kind: "file" });
+      // At the root, nothing to expand.
+      useFiles.getState().startCreate(1, A, "dir");
+      expect(useFiles.getState().edit).toEqual({ mode: "create", projectId: 1, dir: A, kind: "dir" });
+      useFiles.getState().cancelEdit();
+      expect(useFiles.getState().edit).toBeNull();
+    });
+
+    it("create re-lists the directory, clears the edit and opens a new file", async () => {
+      useFiles.getState().ensure(1, A);
+      await flush();
+      useFiles.getState().startCreate(1, A, "file");
+      list.mockClear();
+      create.mockResolvedValueOnce(`${A}\\new.md`);
+      expect(await useFiles.getState().create(1, A, "new.md", "file")).toBe(true);
+      await flush();
+      expect(create).toHaveBeenCalledWith(A, "new.md", "file");
+      expect(list).toHaveBeenCalledWith(A);
+      expect(useFiles.getState().edit).toBeNull();
+      expect(useFiles.getState().byProject.get(1)!.open).toBe(`${A}\\new.md`);
+    });
+
+    it("a rejected create keeps the edit row and toasts", async () => {
+      useFiles.getState().ensure(1, A);
+      await flush();
+      useFiles.getState().startCreate(1, A, "dir");
+      create.mockRejectedValueOnce("already exists: src");
+      expect(await useFiles.getState().create(1, A, "src", "dir")).toBe(false);
+      expect(useFiles.getState().edit).not.toBeNull();
+      expect(showToast).toHaveBeenCalledWith("already exists: src");
+    });
+
+    it("rename re-keys the open dirty file and re-lists the parent", async () => {
+      await openAndEdit();
+      useFiles.getState().startRename(1, F);
+      list.mockClear();
+      rename.mockResolvedValueOnce(`${A}\\y.md`);
+      expect(await useFiles.getState().rename(1, F, "y.md")).toBe(true);
+      expect(rename).toHaveBeenCalledWith(F, "y.md");
+      const p = project();
+      expect(p.open).toBe(`${A}\\y.md`);
+      expect(p.drafts.has(pathKey(`${A}\\y.md`))).toBe(true);
+      expect(p.drafts.get(pathKey(`${A}\\y.md`))!.path).toBe(`${A}\\y.md`);
+      expect(p.editing.has(pathKey(`${A}\\y.md`))).toBe(true);
+      expect(list).toHaveBeenCalledWith(A);
+      expect(useFiles.getState().edit).toBeNull();
+    });
+
+    it("rename to the same name just closes the edit", async () => {
+      useFiles.getState().ensure(1, A);
+      await flush();
+      useFiles.getState().startRename(1, F);
+      expect(await useFiles.getState().rename(1, F, "x.md")).toBe(true);
+      expect(rename).not.toHaveBeenCalled();
+      expect(useFiles.getState().edit).toBeNull();
+    });
+
+    it("remove of the open file closes it, drops its draft, re-lists and toasts", async () => {
+      await openAndEdit();
+      list.mockClear();
+      del.mockResolvedValueOnce(undefined);
+      expect(await useFiles.getState().remove(1, F)).toBe(true);
+      expect(del).toHaveBeenCalledWith(F);
+      const p = project();
+      expect(p.open).toBeNull();
+      expect(p.file).toBeNull();
+      expect(p.drafts.size).toBe(0);
+      expect(list).toHaveBeenCalledWith(A);
+      expect(showToast).toHaveBeenCalledWith("Moved x.md to the Recycle Bin");
+    });
+
+    it("dirtyUnder finds drafts below a directory", async () => {
+      const s = useFiles.getState();
+      s.ensure(1, A);
+      s.toggleDir(1, SRC);
+      s.openFile(1, `${SRC}\\App.tsx`);
+      await flush();
+      s.setEditing(1, `${SRC}\\App.tsx`, true);
+      s.markDirty(1, `${SRC}\\App.tsx`);
+      expect(s.dirtyUnder(1, SRC)).toEqual([{ projectId: 1, root: A, path: `${SRC}\\App.tsx` }]);
+      expect(s.dirtyUnder(1, `${SRC}\\App.tsx`)).toHaveLength(1);
+      expect(s.dirtyUnder(1, `${A}\\src-tauri`)).toEqual([]);
+      expect(s.dirtyUnder(9, SRC)).toEqual([]);
     });
   });
 });
