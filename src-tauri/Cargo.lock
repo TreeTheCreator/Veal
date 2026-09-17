@@ -4162,6 +4162,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tempfile",
  "trash",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

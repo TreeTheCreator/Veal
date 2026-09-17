@@ -42,6 +42,16 @@ describe("insert", () => {
     t = insert(t, pane(5));
     expect(shape(t)).toEqual(["row", ["col", 1, 3, 5], ["col", 2, 4]]);
   });
+
+  it("wraps a column root in a row so the grid comes back (plan-13)", () => {
+    let t: LayoutNode | null = four();
+    t = remove(remove(t, 1), 3);
+    expect(shape(t)).toEqual(["col", 2, 4]);
+    t = insert(t, pane(5));
+    expect(shape(t)).toEqual(["row", ["col", 2, 4], 5]);
+    t = insert(t, pane(6));
+    expect(shape(t)).toEqual(["row", ["col", 2, 4], ["col", 5, 6]]);
+  });
 });
 
 describe("remove", () => {

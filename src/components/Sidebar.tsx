@@ -48,6 +48,8 @@ export function Sidebar({ onAddProject }: Props) {
   const atCap = panes(tree).length >= PANE_CAP;
 
   const [spawnFor, setSpawnFor] = useState<number | null>(null);
+  // The `+` that opened the popover closes it again (plan-13).
+  const toggleSpawn = (id: number) => setSpawnFor((cur) => (cur === id ? null : id));
   const [menu, setMenu] = useState<Menu | null>(null);
   const [pending, setPending] = useState<PendingUnpin | null>(null);
 
@@ -133,15 +135,16 @@ export function Sidebar({ onAddProject }: Props) {
                   tabIndex={0}
                   title={atCap ? `Soft cap of ${PANE_CAP} reached` : "New terminal here"}
                   aria-disabled={atCap}
+                  data-popover-anchor={`spawn-${p.id}`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (!atCap) setSpawnFor(p.id);
+                    if (!atCap) toggleSpawn(p.id);
                   }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
                       e.stopPropagation();
-                      if (!atCap) setSpawnFor(p.id);
+                      if (!atCap) toggleSpawn(p.id);
                     }
                   }}
                 >
@@ -153,6 +156,7 @@ export function Sidebar({ onAddProject }: Props) {
                   className="side"
                   cwdLabel={tilde(p.path)}
                   defaultKind={defaultKind}
+                  anchor={`spawn-${p.id}`}
                   onClose={() => setSpawnFor(null)}
                   onPick={(kind) => spawn(p, kind)}
                 />

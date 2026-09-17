@@ -107,10 +107,34 @@ pub fn read(path: &Path) -> Result<FileText, String> {
     Ok(FileText { text, size, mtime, bom })
 }
 
+/// Hidden / system / archive etc. on Windows (plan-13): the rename below
+/// makes a new file, so what the old one had is put back afterwards.
+#[cfg(windows)]
+fn file_attributes(meta: &std::fs::Metadata) -> u32 {
+    use std::os::windows::fs::MetadataExt;
+    meta.file_attributes()
+}
+
+#[cfg(windows)]
+fn restore_attributes(path: &Path, attrs: u32) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{SetFileAttributesW, FILE_ATTRIBUTE_NORMAL};
+    if attrs == 0 || attrs == FILE_ATTRIBUTE_NORMAL {
+        return;
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    // Best effort: the content is saved either way, and the mtime was read after the rename.
+    unsafe {
+        SetFileAttributesW(wide.as_ptr(), attrs);
+    }
+}
+
 /// Writes `text` (LF-joined, as CodeMirror hands it over) back to `path`,
 /// re-applying CRLF and the BOM the file had, atomically via a sibling temp
 /// file. `expected_mtime: Some(m)` refuses the write unless the file's
 /// current mtime is still `m` — the "never clobber an agent's edit" rule.
+/// A read-only file is refused up front (`read-only on disk`), and on
+/// Windows the file's attributes survive the rename.
 pub fn write(
     path: &Path,
     text: &str,
@@ -118,14 +142,23 @@ pub fn write(
     bom: bool,
     expected_mtime: Option<u64>,
 ) -> Result<Written, String> {
+    let before = match std::fs::metadata(path) {
+        Ok(meta) => Some(meta),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
     if let Some(expected) = expected_mtime {
-        match std::fs::metadata(path) {
-            Ok(meta) if mtime_ms(&meta) == expected => {}
-            Ok(_) => return Err("changed on disk".into()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("deleted on disk".into()),
-            Err(e) => return Err(format!("{}: {e}", path.display())),
+        match &before {
+            Some(meta) if mtime_ms(meta) == expected => {}
+            Some(_) => return Err("changed on disk".into()),
+            None => return Err("deleted on disk".into()),
         }
     }
+    if before.as_ref().is_some_and(|m| m.permissions().readonly()) {
+        return Err("read-only on disk".into());
+    }
+    #[cfg(windows)]
+    let attrs = before.as_ref().map(file_attributes);
     let mut out = String::with_capacity(text.len() + BOM.len() + text.len() / 16);
     if bom {
         out.push_str(BOM);
@@ -142,6 +175,10 @@ pub fn write(
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("rename {}: {e}", path.display()));
+    }
+    #[cfg(windows)]
+    if let Some(attrs) = attrs {
+        restore_attributes(path, attrs);
     }
     let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(Written {
@@ -276,6 +313,37 @@ mod tests {
         assert_eq!(names(&entries), ["A", "b", "B.txt", "z.txt"]);
         assert_eq!(entries[0].kind, "dir");
         assert_eq!(entries[2], Entry { name: "B.txt".into(), kind: "file", size: 2 });
+    }
+
+    #[test]
+    fn write_refuses_a_read_only_file_and_leaves_no_temp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("locked.txt");
+        fs::write(&path, "keep").unwrap();
+        let mut perm = fs::metadata(&path).unwrap().permissions();
+        perm.set_readonly(true);
+        fs::set_permissions(&path, perm).unwrap();
+        assert_eq!(write(&path, "new", false, false, None), Err("read-only on disk".into()));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "keep");
+        assert!(!path.with_extension("txt.veal-tmp").exists());
+        let mut perm = fs::metadata(&path).unwrap().permissions();
+        perm.set_readonly(false);
+        fs::set_permissions(&path, perm).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn write_keeps_the_hidden_attribute() {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("secret.txt");
+        fs::write(&path, "old").unwrap();
+        restore_attributes(&path, fs::metadata(&path).unwrap().file_attributes() | FILE_ATTRIBUTE_HIDDEN);
+        assert_ne!(fs::metadata(&path).unwrap().file_attributes() & FILE_ATTRIBUTE_HIDDEN, 0, "setup");
+        write(&path, "new", false, false, None).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+        assert_ne!(fs::metadata(&path).unwrap().file_attributes() & FILE_ATTRIBUTE_HIDDEN, 0, "hidden bit survives a save");
     }
 
     #[test]

@@ -48,8 +48,11 @@ function ensureAgentListener() {
   });
 }
 
-// One app-wide listener for `pty-exit`, fanned out by pane id.
+// One app-wide listener for `pty-exit`, fanned out by pane id. An exit
+// with no handler yet is remembered (plan-13): a shell that dies at once
+// can emit before `pty_spawn`'s reply lets the pane register one.
 const exitHandlers = new Map<number, Set<(code: number | null) => void>>();
+const earlyExits = new Map<number, number | null>();
 let exitListener: Promise<UnlistenFn> | null = null;
 
 function ensureExitListener() {
@@ -57,7 +60,8 @@ function ensureExitListener() {
     const { id, code } = ev.payload;
     const handlers = exitHandlers.get(id);
     exitHandlers.delete(id);
-    handlers?.forEach((cb) => cb(code));
+    if (handlers) handlers.forEach((cb) => cb(code));
+    else earlyExits.set(id, code);
   });
 }
 
@@ -77,6 +81,15 @@ export async function spawnPty(
     resize: (cols, rows) => invoke("pty_resize", { id, cols, rows }),
     kill: () => invoke("pty_kill", { id }),
     onExit(cb) {
+      if (earlyExits.has(id)) {
+        const code = earlyExits.get(id)!;
+        earlyExits.delete(id);
+        let live = true;
+        queueMicrotask(() => live && cb(code));
+        return () => {
+          live = false;
+        };
+      }
       let set = exitHandlers.get(id);
       if (!set) exitHandlers.set(id, (set = new Set()));
       set.add(cb);

@@ -41,9 +41,12 @@ function split(dir: Dir, children: LayoutNode[], weights = children.map(() => 1)
 
 // Where the next pane goes: fill the root row to 2, then split the root child
 // with the fewest panes into a column. Four panes end up as (1/3) | (2/4).
+// A root that is not a row — `remove` collapsed the row onto its last
+// column — is wrapped in one first (plan-13), so the grid comes back rather
+// than every later pane stacking into that column.
 export function insert(root: LayoutNode | null, p: PaneNode): LayoutNode {
   if (!root) return p;
-  if (root.type !== "split") return split("row", [root, p]);
+  if (root.type !== "split" || root.dir !== "row") return split("row", [root, p]);
   if (root.children.length < 2) {
     return { ...root, children: [...root.children, p], weights: [...root.weights, 1] };
   }

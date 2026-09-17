@@ -9,10 +9,12 @@ interface Props {
   defaultKind: PaneKind;
   onPick(kind: PaneKind): void;
   onClose(): void;
+  /** The `data-popover-anchor` value of the trigger that opened this popover; its own pointerdowns are ignored. */
+  anchor: string;
   className?: string;
 }
 
-export function TypePopover({ cwdLabel, defaultKind, onPick, onClose, className = "" }: Props) {
+export function TypePopover({ cwdLabel, defaultKind, onPick, onClose, anchor, className = "" }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const shellRef = useRef<HTMLButtonElement>(null);
   const agentRef = useRef<HTMLButtonElement>(null);
@@ -23,8 +25,13 @@ export function TypePopover({ cwdLabel, defaultKind, onPick, onClose, className 
   // Runs once on open: focus the default option, close on outside click / Escape.
   useEffect(() => {
     (defaultRef.current === "agent" ? agentRef : shellRef).current?.focus();
+    // A pointerdown on the trigger that opened us is its business (plan-13):
+    // closing here and letting its click reopen made the trigger a no-op.
     const onDown = (e: PointerEvent) => {
-      if (!ref.current?.contains(e.target as Node)) onCloseRef.current();
+      const target = e.target as Element | null;
+      const onAnchor = target?.closest?.("[data-popover-anchor]")?.getAttribute("data-popover-anchor") === anchor;
+      if (ref.current?.contains(target) || onAnchor) return;
+      onCloseRef.current();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCloseRef.current();
@@ -35,7 +42,7 @@ export function TypePopover({ cwdLabel, defaultKind, onPick, onClose, className 
       document.removeEventListener("pointerdown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, []);
+  }, [anchor]);
 
   return (
     <div className={`popover open ${className}`} role="menu" ref={ref}>

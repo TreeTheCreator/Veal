@@ -28,6 +28,11 @@ notify = "8"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 trash = "5"
 
+[target.'cfg(windows)'.dependencies]
+# Already in the tree through Tauri; `fs::write` puts a saved file's
+# hidden/system bits back after the rename (plan-13).
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 tempfile = "3.27.0"
 

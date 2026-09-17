@@ -17,13 +17,14 @@ export function NewTerminalButton({ disabled, cwdLabel, onPick }: Props) {
 
   return (
     <div className="new-terminal">
-      <button className="btn primary" disabled={disabled} onClick={() => setOpen((o) => !o)}>
+      <button className="btn primary" disabled={disabled} data-popover-anchor="new-terminal" onClick={() => setOpen((o) => !o)}>
         + New terminal
       </button>
       {open && (
         <TypePopover
           cwdLabel={cwdLabel}
           defaultKind={defaultKind}
+          anchor="new-terminal"
           onClose={close}
           onPick={(kind) => {
             setOpen(false);
