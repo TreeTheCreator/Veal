@@ -238,6 +238,21 @@ fn tasks_set_status(
 }
 
 #[tauri::command]
+fn tasks_set_title(
+    db: State<'_, Db>,
+    lock: State<'_, TasksLock>,
+    root: Option<String>,
+    id: String,
+    title: String,
+) -> Result<Vec<Task>, String> {
+    let _g = lock.0.lock().unwrap_or_else(|p| p.into_inner());
+    match task_root(&db, root)? {
+        Some(root) => tasks::set_title(&root, &id, &title),
+        None => db.inbox_set_title(&id, &title),
+    }
+}
+
+#[tauri::command]
 fn tasks_remove(
     db: State<'_, Db>,
     lock: State<'_, TasksLock>,
@@ -299,6 +314,7 @@ pub fn run() {
             tasks_list,
             tasks_add,
             tasks_set_status,
+            tasks_set_title,
             tasks_remove,
         ])
         .on_window_event(|window, event| {

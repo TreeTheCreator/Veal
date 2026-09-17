@@ -8,6 +8,7 @@ import { Icon } from "../Icon";
 import { validateName, stemLength } from "../files/names";
 import type { TreeEdit } from "../files/store";
 import { parentIndex, pathKey, type Row } from "../files/tree";
+import { InlineInput } from "./InlineInput";
 
 interface Props {
   rows: Row[];
@@ -114,7 +115,7 @@ export function FileTree({
         <div className="node ghost" role="treeitem" aria-selected={false}>
           <span className="tw" />
           <Icon name={edit.kind === "dir" ? "folder" : "file"} size={14} />
-          <NameInput initial="" onCommit={onCommit} onCancel={onCancelEdit} />
+          <InlineInput className="rename" initial="" validate={validateName} onCommit={onCommit} onCancel={onCancelEdit} />
         </div>
       </div>
     );
@@ -163,7 +164,7 @@ export function FileTree({
                 <span className={`tw${row.expanded && row.state === "loading" ? " busy" : ""}`}>{isDir ? "▼" : ""}</span>
                 <Icon name={isDir ? "folder" : "file"} size={14} />
                 {renaming ? (
-                  <NameInput initial={row.name} onCommit={onCommit} onCancel={onCancelEdit} />
+                  <InlineInput className="rename" initial={row.name} validate={validateName} selectTo={stemLength} onCommit={onCommit} onCancel={onCancelEdit} />
                 ) : (
                   <span className="nname">{row.name}</span>
                 )}
@@ -176,57 +177,5 @@ export function FileTree({
         );
       })}
     </div>
-  );
-}
-
-/** The inline name field: Enter commits (when valid), Escape and blur cancel. */
-function NameInput({ initial, onCommit, onCancel }: { initial: string; onCommit(name: string): Promise<boolean>; onCancel(): void }) {
-  const [value, setValue] = useState(initial);
-  const ref = useRef<HTMLInputElement>(null);
-  const error = validateName(value);
-  // Committing blurs the input; the blur must not then cancel.
-  const done = useRef(false);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.focus();
-    el.setSelectionRange(0, initial ? stemLength(initial) : 0);
-  }, [initial]);
-
-  return (
-    <input
-      ref={ref}
-      className="rename"
-      value={value}
-      spellCheck={false}
-      aria-invalid={error !== null}
-      title={error ?? undefined}
-      onChange={(e) => setValue(e.target.value)}
-      onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        e.stopPropagation();
-        if (e.key === "Enter") {
-          e.preventDefault();
-          if (error === null) {
-            done.current = true;
-            void onCommit(value).then((ok) => {
-              if (!ok) {
-                // Stays editable: the toast said why. Blur cancels again from here.
-                done.current = false;
-                ref.current?.focus();
-              }
-            });
-          }
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          done.current = true;
-          onCancel();
-        }
-      }}
-      onBlur={() => {
-        if (!done.current) onCancel();
-      }}
-    />
   );
 }

@@ -22,6 +22,7 @@ interface TasksState {
   /** Resolve true on success; on failure the error is recorded and the list reloaded. */
   add(projectId: number | null, root: string | null, title: string, created: string): Promise<boolean>;
   setStatus(projectId: number | null, root: string | null, id: string, status: Status): Promise<boolean>;
+  setTitle(projectId: number | null, root: string | null, id: string, title: string): Promise<boolean>;
   remove(projectId: number | null, root: string | null, id: string): Promise<boolean>;
   /**
    * Watcher batch for a project whose list has been loaded: re-reads it,
@@ -96,6 +97,10 @@ export const useTasks = create<TasksState>((set, get) => {
 
     setStatus(projectId, root, id, status) {
       return apply(projectId, root, () => tasks.setStatus(root, id, status), true);
+    },
+
+    setTitle(projectId, root, id, title) {
+      return apply(projectId, root, () => tasks.setTitle(root, id, title), true);
     },
 
     remove(projectId, root, id) {

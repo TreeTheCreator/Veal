@@ -255,6 +255,23 @@ pub fn set_status(root: &Path, id: &str, status: Status) -> Result<Vec<Task>, St
     Ok(file.tasks)
 }
 
+/// Plan-10: a new title; status, `created` and extras are untouched.
+pub fn set_title(root: &Path, id: &str, title: &str) -> Result<Vec<Task>, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("empty title".into());
+    }
+    let mut file = read_file(root)?;
+    let task = file
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == id)
+        .ok_or_else(|| format!("no task \"{id}\""))?;
+    task.title = title.to_string();
+    write_file(root, &file)?;
+    Ok(file.tasks)
+}
+
 pub fn remove(root: &Path, id: &str) -> Result<Vec<Task>, String> {
     let mut file = read_file(root)?;
     let before = file.tasks.len();
@@ -373,6 +390,28 @@ mod tests {
             assert!(err.contains(expect), "{err}");
             assert_eq!(read(tmp.path()), body, "file must be untouched");
         }
+    }
+
+    #[test]
+    fn set_title_keeps_everything_else() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join(DIR_NAME)).unwrap();
+        fs::write(
+            file_path(tmp.path()),
+            "{ \"version\": 1, \"tasks\": [ { \"id\": \"t1\", \"title\": \"old\", \"status\": \"doing\", \"created\": \"2026-09-01\", \"notes\": \"n\" } ] }",
+        )
+        .unwrap();
+        let tasks = set_title(tmp.path(), "t1", "  new title ").unwrap();
+        assert_eq!(tasks[0].title, "new title");
+        assert_eq!(tasks[0].status, Status::Doing);
+        assert_eq!(tasks[0].created, "2026-09-01");
+        assert_eq!(tasks[0].extra["notes"], "n");
+        assert!(read(tmp.path()).contains("\"title\": \"new title\", \"status\": \"doing\", \"created\": \"2026-09-01\", \"notes\": \"n\""));
+
+        let before = read(tmp.path());
+        assert_eq!(set_title(tmp.path(), "t1", "  ").unwrap_err(), "empty title");
+        assert_eq!(set_title(tmp.path(), "zz", "x").unwrap_err(), "no task \"zz\"");
+        assert_eq!(read(tmp.path()), before, "file untouched on error");
     }
 
     #[test]

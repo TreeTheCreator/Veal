@@ -226,6 +226,21 @@ impl Db {
         Self::inbox_list_locked(&conn)
     }
 
+    pub fn inbox_set_title(&self, id: &str, title: &str) -> Result<Vec<Task>, String> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err("empty title".into());
+        }
+        let conn = self.lock();
+        let changed = conn
+            .execute("UPDATE tasks SET title = ?1 WHERE id = ?2", params![title, id])
+            .map_err(sql_err)?;
+        if changed == 0 {
+            return Err(format!("no task \"{id}\""));
+        }
+        Self::inbox_list_locked(&conn)
+    }
+
     pub fn inbox_remove(&self, id: &str) -> Result<Vec<Task>, String> {
         let conn = self.lock();
         let changed = conn
@@ -394,9 +409,14 @@ mod tests {
         let tasks = db.inbox_set_status(&tasks[0].id, Status::Done).unwrap();
         assert_eq!(tasks[0].status, Status::Done);
         assert_eq!(tasks[0].title, "first");
+        let tasks = db.inbox_set_title(&tasks[0].id, " renamed ").unwrap();
+        assert_eq!(tasks[0].title, "renamed");
+        assert_eq!(tasks[0].status, Status::Done);
+        assert_eq!(db.inbox_set_title(&tasks[0].id, " ").unwrap_err(), "empty title");
+        assert_eq!(db.inbox_set_title("zz", "x").unwrap_err(), "no task \"zz\"");
         let tasks = db.inbox_remove(&tasks[1].id).unwrap();
         let titles: Vec<_> = tasks.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(titles, ["first", "third"]);
+        assert_eq!(titles, ["renamed", "third"]);
 
         assert_eq!(db.inbox_set_status("zz", Status::Done).unwrap_err(), "no task \"zz\"");
         assert_eq!(db.inbox_remove("zz").unwrap_err(), "no task \"zz\"");

@@ -4,12 +4,14 @@ import type { Task } from "./api";
 const list = vi.fn<(root: string | null) => Promise<Task[]>>();
 const add = vi.fn<(root: string | null, title: string, created: string) => Promise<Task[]>>();
 const setStatus = vi.fn<(root: string | null, id: string, status: string) => Promise<Task[]>>();
+const setTitle = vi.fn<(root: string | null, id: string, title: string) => Promise<Task[]>>();
 const remove = vi.fn<(root: string | null, id: string) => Promise<Task[]>>();
 vi.mock("./api", () => ({
   tasks: {
     list: (r: string | null) => list(r),
     add: (r: string | null, t: string, c: string) => add(r, t, c),
     setStatus: (r: string | null, i: string, s: string) => setStatus(r, i, s),
+    setTitle: (r: string | null, i: string, t: string) => setTitle(r, i, t),
     remove: (r: string | null, i: string) => remove(r, i),
   },
 }));
@@ -23,7 +25,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
   useTasks.setState({ scope: "project", byProject: new Map(), inbox: { status: "loaded", tasks: [] } });
-  for (const fn of [list, add, setStatus, remove]) fn.mockReset();
+  for (const fn of [list, add, setStatus, setTitle, remove]) fn.mockReset();
   list.mockResolvedValue([t("a")]);
 });
 
@@ -136,5 +138,25 @@ describe("tasks store", () => {
     expect(touchesTasks(ROOT, [`${ROOT}\\.veal\\tasks.json`])).toBe(true);
     expect(touchesTasks(ROOT, [`${ROOT}\\.veal\\tasks.json.tmp`])).toBe(false);
     expect(touchesTasks(ROOT, [`${ROOT}\\x`])).toBe(false);
+  });
+
+  describe("setTitle (plan-10)", () => {
+    it("calls the API and replaces the list", async () => {
+      useTasks.setState({ byProject: new Map([[1, { status: "loaded", tasks: [t("a")] }]]) });
+      setTitle.mockResolvedValueOnce([{ ...t("a"), title: "renamed" }]);
+      expect(await useTasks.getState().setTitle(1, ROOT, "a", "renamed")).toBe(true);
+      expect(setTitle).toHaveBeenCalledWith(ROOT, "a", "renamed");
+      expect(selectList(1)(useTasks.getState()).tasks[0].title).toBe("renamed");
+    });
+
+    it("records a failure and reloads the list", async () => {
+      useTasks.setState({ byProject: new Map([[1, { status: "loaded", tasks: [t("a")] }]]) });
+      setTitle.mockRejectedValueOnce("empty title");
+      list.mockResolvedValueOnce([t("a")]);
+      expect(await useTasks.getState().setTitle(1, ROOT, "a", " ")).toBe(false);
+      await flush();
+      expect(list).toHaveBeenCalledWith(ROOT);
+      expect(selectList(1)(useTasks.getState())).toEqual({ status: "loaded", tasks: [t("a")] });
+    });
   });
 });

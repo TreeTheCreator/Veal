@@ -26,5 +26,7 @@ export const tasks = {
     invoke<Task[]>("tasks_add", { root, title, created }),
   setStatus: (root: string | null, id: string, status: Status) =>
     invoke<Task[]>("tasks_set_status", { root, id, status }),
+  setTitle: (root: string | null, id: string, title: string) =>
+    invoke<Task[]>("tasks_set_title", { root, id, title }),
   remove: (root: string | null, id: string) => invoke<Task[]>("tasks_remove", { root, id }),
 };

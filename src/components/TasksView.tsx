@@ -10,6 +10,7 @@ import { STATUSES, type Task } from "../tasks/api";
 import { COLUMN_LABEL, columns, forward, isEmpty, today, type Card, type Source } from "../tasks/board";
 import { useTasks, type ListState } from "../tasks/store";
 import { useUi } from "../ui";
+import { InlineInput } from "./InlineInput";
 
 const INBOX = "__inbox__";
 
@@ -18,7 +19,9 @@ export function TasksView({ visible }: { visible: boolean }) {
   const active = useProjects(selectActive);
   const loaded = useProjects((s) => s.loaded);
   const showToast = useUi((s) => s.showToast);
-  const { byProject, inbox, load, add, setStatus, remove, setScope } = useTasks();
+  const { byProject, inbox, load, add, setStatus, setTitle, remove, setScope } = useTasks();
+  // Plan-10: the one card whose title is being edited, keyed `project:id`.
+  const [editingKey, setEditingKey] = useState<string | null>(null);
   const scopeSetting = useTasks((s) => s.scope);
   // Nothing pinned → only the Inbox exists, so the scope is forced global.
   const scope = active ? scopeSetting : "global";
@@ -60,6 +63,17 @@ export function TasksView({ visible }: { visible: boolean }) {
     void setStatus(c.project?.id ?? null, rootFor(c.project), c.task.id, forward(c.task.status));
   const onReopen = (c: Card) => void setStatus(c.project?.id ?? null, rootFor(c.project), c.task.id, "todo");
   const onRemove = (c: Card) => void remove(c.project?.id ?? null, rootFor(c.project), c.task.id);
+  const cardKey = (c: Card) => `${c.project?.id ?? "inbox"}:${c.task.id}`;
+  const onRename = async (c: Card, title: string): Promise<boolean> => {
+    if (title.trim() === c.task.title) {
+      setEditingKey(null);
+      return true;
+    }
+    const ok = await setTitle(c.project?.id ?? null, rootFor(c.project), c.task.id, title);
+    if (ok) setEditingKey(null);
+    else showToast("Could not rename the task");
+    return ok;
+  };
 
   const loading = sources.some(({ project }) => (project === null ? inbox : byProject.get(project.id))?.status === "loading");
   const activeError = active ? byProject.get(active.id)?.status === "error" : false;
@@ -96,7 +110,7 @@ export function TasksView({ visible }: { visible: boolean }) {
           Refresh
         </button>
         <span className="grow" />
-        <span className="hint">▸ moves a task forward</span>
+        <span className="hint">▸ moves a task forward · double-click a title to edit it</span>
       </div>
 
       {errors.length > 0 && (
@@ -121,8 +135,12 @@ export function TasksView({ visible }: { visible: boolean }) {
               </div>
               {cols[status].map((c) => (
                 <TaskCard
-                  key={`${c.project?.id ?? "inbox"}:${c.task.id}`}
+                  key={cardKey(c)}
                   card={c}
+                  editing={editingKey === cardKey(c)}
+                  onEdit={() => setEditingKey(cardKey(c))}
+                  onCancelEdit={() => setEditingKey(null)}
+                  onRename={(title) => onRename(c, title)}
                   onForward={onForward}
                   onReopen={onReopen}
                   onRemove={onRemove}
@@ -150,31 +168,48 @@ export function TasksView({ visible }: { visible: boolean }) {
   );
 }
 
+const emptyTitle = (v: string) => (v.trim() === "" ? "a task needs a title" : null);
+
 function TaskCard({
   card,
+  editing,
+  onEdit,
+  onCancelEdit,
+  onRename,
   onForward,
   onReopen,
   onRemove,
 }: {
   card: Card;
+  editing: boolean;
+  onEdit: () => void;
+  onCancelEdit: () => void;
+  onRename: (title: string) => Promise<boolean>;
   onForward: (c: Card) => void;
   onReopen: (c: Card) => void;
   onRemove: (c: Card) => void;
 }) {
   const t: Task = card.task;
   return (
-    <div className={`task${t.status === "done" ? " done" : ""}`}>
-      <div className="title">{t.title}</div>
+    <div className={`task${t.status === "done" ? " done" : ""}${editing ? " editing" : ""}`}>
+      {editing ? (
+        <InlineInput className="title-edit" initial={t.title} validate={emptyTitle} onCommit={onRename} onCancel={onCancelEdit} />
+      ) : (
+        <div className="title" onDoubleClick={onEdit} title="Double-click to edit">{t.title}</div>
+      )}
       <div className="meta">
         {card.chip && <span className={`chip${card.project === null ? " inbox" : ""}`}>{card.chip}</span>}
-        <span className="acts">
-          {t.status !== "done" ? (
-            <button title="Move forward" onClick={() => onForward(card)}>▸</button>
-          ) : (
-            <button title="Reopen" onClick={() => onReopen(card)}>↺</button>
-          )}
-          <button title="Delete" onClick={() => onRemove(card)}>×</button>
-        </span>
+        {!editing && (
+          <span className="acts">
+            <button title="Edit title" onClick={onEdit}>✎</button>
+            {t.status !== "done" ? (
+              <button title="Move forward" onClick={() => onForward(card)}>▸</button>
+            ) : (
+              <button title="Reopen" onClick={() => onReopen(card)}>↺</button>
+            )}
+            <button title="Delete" onClick={() => onRemove(card)}>×</button>
+          </span>
+        )}
       </div>
     </div>
   );
