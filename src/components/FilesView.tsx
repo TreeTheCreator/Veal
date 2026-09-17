@@ -1,6 +1,7 @@
-// Files view (plan-04): the active project's directory tree on the left, a
-// read-only CodeMirror viewer on the right. Per-project state lives in
-// files/store.ts and survives switching projects.
+// Files view (plan-04, plan-06): the active project's directory tree on the
+// left, a CodeMirror viewer/editor on the right. Per-project state — tree,
+// open file, edit mode, drafts — lives in files/store.ts and survives
+// switching projects.
 import { useEffect, useMemo } from "react";
 import { selectProject, useFiles } from "../files/store";
 import { flatten, pathKey } from "../files/tree";
@@ -43,7 +44,10 @@ export function FilesView({ visible }: { visible: boolean }) {
   const id = active.id;
   const rootState = state?.dirs.get(pathKey(active.path));
   const rootError = rootState?.status === "error" ? rootState.error : null;
-  const rel = state?.open ? relativeTo(active.path, state.open) : null;
+  const open = state?.open ?? null;
+  const openKey = open ? pathKey(open) : null;
+  const rel = open ? relativeTo(active.path, open) : null;
+  const dirty = state?.drafts ?? new Map();
 
   return (
     <>
@@ -54,17 +58,27 @@ export function FilesView({ visible }: { visible: boolean }) {
           Refresh
         </button>
         <span className="grow" />
-        <span className="hint">Read-only · Ctrl+F searches the file</span>
+        <span className="hint">Edit to change a file · Ctrl+S saves · Ctrl+F searches</span>
       </div>
       <div className="files">
         <FileTree
           rows={rows}
-          open={state?.open ?? null}
+          open={open}
+          dirty={dirty}
           rootError={rootError}
           onToggle={(p) => toggleDir(id, p)}
           onOpen={(p) => openFile(id, p)}
         />
-        <CodeViewer active={visible} projectName={active.name} rel={rel} file={state?.file ?? null} />
+        <CodeViewer
+          active={visible}
+          projectId={id}
+          projectName={active.name}
+          path={open}
+          rel={rel}
+          file={state?.file ?? null}
+          editing={openKey !== null && (state?.editing.has(openKey) ?? false)}
+          dirty={openKey !== null && dirty.has(openKey)}
+        />
       </div>
     </>
   );

@@ -1,10 +1,17 @@
-// Transient UI state: which view is showing, and the toast. Not persisted —
-// the app always opens on Terminal.
+// UI state: which view is showing, and the toast. The view is written to the
+// `settings` table so a restart — including the dev loop's reload when a
+// file of the running app itself is saved — comes back to the same view.
 import { create } from "zustand";
+import { db } from "./db";
 
 export type View = "terminal" | "files" | "tasks" | "settings";
 
 export const TAB_VIEWS: View[] = ["terminal", "files", "tasks"];
+
+export const VIEW_KEY = "view";
+
+export const isView = (v: string | undefined): v is View =>
+  v === "terminal" || v === "files" || v === "tasks" || v === "settings";
 
 /** Ctrl+1/2/3 → Terminal / Files / Tasks. Shared with xterm's key filter. */
 export function isViewShortcut(e: KeyboardEvent): boolean {
@@ -32,6 +39,7 @@ export const useUi = create<UiState>((set) => ({
   toast: null,
   setView(view) {
     set({ view });
+    db.settingsSet(VIEW_KEY, view).catch((e) => console.warn("settings_set", VIEW_KEY, e));
   },
   showToast(toast) {
     set({ toast });

@@ -1,4 +1,4 @@
-// Step 6: the shell with sidebar, view switching, persistence, Files and Tasks views.
+// Step 7: the shell with sidebar, view switching, persistence, Files (with editing) and Tasks views.
 // Boot loads settings + projects from SQLite, restores the pane layout (or
 // opens one shell in the active project), then starts writing layout changes
 // back. All views stay mounted; inactive ones are hidden with `visibility`
@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "./Icon";
 import { AddProjectModal } from "./components/AddProjectModal";
+import { CloseGuard } from "./components/CloseGuard";
 import { FilesView } from "./components/FilesView";
 import { NewTerminalButton } from "./components/NewTerminalButton";
 import { PaneLayout } from "./components/PaneLayout";
@@ -19,7 +20,7 @@ import { PANE_CAP } from "./layout/tree";
 import { tilde } from "./paths";
 import { selectActive, useProjects } from "./projects/store";
 import { useSettings } from "./settings/store";
-import { TAB_VIEWS, useUi, viewForShortcut, type View } from "./ui";
+import { isView, TAB_VIEWS, useUi, VIEW_KEY, viewForShortcut, type View } from "./ui";
 
 const TAB_LABEL: Record<View, string> = { terminal: "Terminal", files: "Files", tasks: "Tasks", settings: "Settings" };
 
@@ -28,6 +29,7 @@ let bootStarted = false;
 
 async function boot() {
   const [settings] = await Promise.all([useSettings.getState().load(), useProjects.getState().load()]);
+  if (isView(settings[VIEW_KEY])) useUi.setState({ view: settings[VIEW_KEY] });
   const restored = useSettings.getState().restoreLayout ? parseLayout(settings[LAYOUT_KEY]) : null;
   if (restored) {
     useLayout.setState(restored);
@@ -137,6 +139,7 @@ export default function App() {
       </main>
 
       {adding && <AddProjectModal onClose={closeAdd} />}
+      <CloseGuard />
       <Toast />
     </div>
   );

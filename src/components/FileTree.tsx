@@ -8,6 +8,8 @@ import { parentIndex, pathKey, type Row } from "../files/tree";
 interface Props {
   rows: Row[];
   open: string | null;
+  /** Files with unsaved edits, keyed by pathKey. */
+  dirty: ReadonlyMap<string, unknown>;
   rootError: string | null;
   onToggle(path: string): void;
   onOpen(path: string): void;
@@ -15,7 +17,7 @@ interface Props {
 
 const INDENT_PX = 16;
 
-export function FileTree({ rows, open, rootError, onToggle, onOpen }: Props) {
+export function FileTree({ rows, open, dirty, rootError, onToggle, onOpen }: Props) {
   const [cursor, setCursor] = useState(0);
   const host = useRef<HTMLDivElement>(null);
   const openKey = open ? pathKey(open) : null;
@@ -70,7 +72,9 @@ export function FileTree({ rows, open, rootError, onToggle, onOpen }: Props) {
       {rootError && <div className="tree-error">{rootError}</div>}
       {rows.map((row, i) => {
         const isDir = row.kind === "dir";
-        const isOpen = !isDir && openKey === pathKey(row.path);
+        const key = pathKey(row.path);
+        const isOpen = !isDir && openKey === key;
+        const isDirty = !isDir && dirty.has(key);
         const cls = ["node", isDir ? "dir" : "file", isDir && !row.expanded ? "collapsed" : "", isOpen ? "open-file" : ""]
           .filter(Boolean)
           .join(" ");
@@ -82,7 +86,7 @@ export function FileTree({ rows, open, rootError, onToggle, onOpen }: Props) {
               aria-expanded={isDir ? row.expanded : undefined}
               aria-selected={isOpen}
               tabIndex={i === cursor ? 0 : -1}
-              title={row.path}
+              title={isDirty ? `${row.path} — unsaved changes` : row.path}
               onClick={() => {
                 setCursor(i);
                 activate(row);
@@ -92,6 +96,7 @@ export function FileTree({ rows, open, rootError, onToggle, onOpen }: Props) {
               <span className={`tw${row.expanded && row.state === "loading" ? " busy" : ""}`}>{isDir ? "▼" : ""}</span>
               <Icon name={isDir ? "folder" : "file"} size={14} />
               <span className="nname">{row.name}</span>
+              {isDirty && <span className="dirty" aria-label="unsaved changes" />}
             </button>
             {row.error && row.expanded && <div className="tree-error">{row.error}</div>}
           </div>

@@ -120,6 +120,28 @@ fn fs_read(db: State<'_, Db>, path: String) -> Result<fs::FileText, String> {
     fs::read(&fs::confine(&db, &path)?)
 }
 
+#[tauri::command]
+fn fs_write(
+    db: State<'_, Db>,
+    path: String,
+    text: String,
+    crlf: bool,
+    bom: bool,
+    expected_mtime: Option<u64>,
+) -> Result<fs::Written, String> {
+    // A deleted file cannot be canonicalised, so confine its parent instead.
+    let target = std::path::Path::new(path.trim());
+    let confined = match fs::confine(&db, &path) {
+        Ok(p) => p,
+        Err(_) => {
+            let parent = target.parent().ok_or_else(|| format!("no parent: {path}"))?;
+            let name = target.file_name().ok_or_else(|| format!("no file name: {path}"))?;
+            fs::confine(&db, &parent.to_string_lossy())?.join(name)
+        }
+    };
+    fs::write(&confined, &text, crlf, bom, expected_mtime)
+}
+
 // ---- tasks view (src/tasks.rs + the Inbox in src/db.rs) ----
 // `root: None` is the Inbox; `Some` is a pinned project root. The lock
 // serialises the file read-modify-write across commands.
@@ -206,14 +228,17 @@ pub fn run() {
             path_kind,
             fs_list,
             fs_read,
+            fs_write,
             tasks_list,
             tasks_add,
             tasks_set_status,
             tasks_remove,
         ])
         .on_window_event(|window, event| {
-            // Kill every shell/agent before the window goes, so nothing is orphaned.
-            if let WindowEvent::CloseRequested { .. } = event {
+            // Kill every shell/agent once the window is really going, so
+            // nothing is orphaned. Not on CloseRequested: the close guard in
+            // JS (plan-06) can cancel that, and the panes must survive it.
+            if let WindowEvent::Destroyed = event {
                 window.state::<Arc<PtyRegistry>>().kill_all();
             }
         })

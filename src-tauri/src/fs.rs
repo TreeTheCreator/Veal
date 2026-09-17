@@ -1,8 +1,9 @@
-//! Read-only filesystem access for the Files view: list one directory, read
-//! one file. Own commands rather than `tauri-plugin-fs` for the same reason
-//! `db.rs` is not `tauri-plugin-sql` — two calls do not need a scoped plugin.
+//! Filesystem access for the Files view: list one directory, read one file,
+//! write one file back (plan-06). Own commands rather than `tauri-plugin-fs`
+//! for the same reason `db.rs` is not `tauri-plugin-sql` — three calls do
+//! not need a scoped plugin.
 //!
-//! Both commands are confined to pinned project roots (plan-04, decision 4).
+//! Every command is confined to pinned project roots (plan-04, decision 4).
 //! The webview only ever runs our own code, so this is hardening, not a
 //! security boundary.
 
@@ -10,6 +11,7 @@ use crate::db::Db;
 use serde::Serialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 /// Files above this are reported by size, not read (`too large`).
 pub const READ_CAP: u64 = 2 * 1024 * 1024;
@@ -27,6 +29,28 @@ pub struct Entry {
 pub struct FileText {
     pub text: String,
     pub size: u64,
+    /// Modification time in whole milliseconds since the epoch; the save's
+    /// conflict check compares against it.
+    pub mtime: u64,
+    /// True when a UTF-8 BOM was stripped from `text`; `write` restores it.
+    pub bom: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Written {
+    pub size: u64,
+    pub mtime: u64,
+}
+
+const BOM: &str = "\u{feff}";
+const TMP_SUFFIX: &str = ".veal-tmp";
+
+fn mtime_ms(meta: &std::fs::Metadata) -> u64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Directories first, then case-insensitive by name; `.git` is hidden.
@@ -61,9 +85,9 @@ pub fn list(dir: &Path) -> Result<Vec<Entry>, String> {
 /// UTF-8 (lossily decoded, BOM stripped). Errors: `too large: N bytes`,
 /// `binary`, or the io error.
 pub fn read(path: &Path) -> Result<FileText, String> {
-    let size = std::fs::metadata(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?
-        .len();
+    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let size = meta.len();
+    let mtime = mtime_ms(&meta);
     if size > READ_CAP {
         return Err(format!("too large: {size} bytes"));
     }
@@ -75,10 +99,54 @@ pub fn read(path: &Path) -> Result<FileText, String> {
         return Err("binary".into());
     }
     let mut text = String::from_utf8_lossy(&bytes).into_owned();
-    if text.starts_with('\u{feff}') {
-        text.remove(0);
+    let bom = text.starts_with(BOM);
+    if bom {
+        text.drain(..BOM.len());
     }
-    Ok(FileText { text, size })
+    Ok(FileText { text, size, mtime, bom })
+}
+
+/// Writes `text` (LF-joined, as CodeMirror hands it over) back to `path`,
+/// re-applying CRLF and the BOM the file had, atomically via a sibling temp
+/// file. `expected_mtime: Some(m)` refuses the write unless the file's
+/// current mtime is still `m` — the "never clobber an agent's edit" rule.
+pub fn write(
+    path: &Path,
+    text: &str,
+    crlf: bool,
+    bom: bool,
+    expected_mtime: Option<u64>,
+) -> Result<Written, String> {
+    if let Some(expected) = expected_mtime {
+        match std::fs::metadata(path) {
+            Ok(meta) if mtime_ms(&meta) == expected => {}
+            Ok(_) => return Err("changed on disk".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("deleted on disk".into()),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
+    let mut out = String::with_capacity(text.len() + BOM.len() + text.len() / 16);
+    if bom {
+        out.push_str(BOM);
+    }
+    if crlf {
+        out.push_str(&text.replace('\n', "\r\n"));
+    } else {
+        out.push_str(text);
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(TMP_SUFFIX);
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, out.as_bytes()).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("rename {}: {e}", path.display()));
+    }
+    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(Written {
+        size: meta.len(),
+        mtime: mtime_ms(&meta),
+    })
 }
 
 /// The canonical form of `path` if it lies under a pinned project root.
@@ -134,6 +202,48 @@ mod tests {
         let f = read(&p).unwrap();
         assert_eq!(f.text, "one\r\ntwo\n");
         assert_eq!(f.size, 12);
+        assert!(f.bom);
+        assert_eq!(f.mtime, mtime_ms(&fs::metadata(&p).unwrap()));
+        assert!(f.mtime > 1_600_000_000_000);
+
+        fs::write(&p, b"plain").unwrap();
+        assert!(!read(&p).unwrap().bom);
+    }
+
+    #[test]
+    fn write_restores_crlf_and_bom_and_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("a.txt");
+        let w = write(&p, "one\ntwo\n", true, true, None).unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"\xEF\xBB\xBFone\r\ntwo\r\n");
+        let f = read(&p).unwrap();
+        assert_eq!(f.text, "one\r\ntwo\r\n");
+        assert!(f.bom);
+        assert_eq!((f.size, f.mtime), (w.size, w.mtime));
+        assert!(!tmp.path().join(format!("a.txt{TMP_SUFFIX}")).exists());
+
+        write(&p, "x", false, false, None).unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"x");
+    }
+
+    #[test]
+    fn write_checks_the_expected_mtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("a.txt");
+        fs::write(&p, b"orig").unwrap();
+        let now = read(&p).unwrap().mtime;
+
+        let w = write(&p, "ok", false, false, Some(now)).unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"ok");
+
+        let err = write(&p, "stale", false, false, Some(w.mtime.wrapping_sub(1))).unwrap_err();
+        assert_eq!(err, "changed on disk");
+        assert_eq!(fs::read(&p).unwrap(), b"ok", "file must be untouched");
+
+        let gone = tmp.path().join("gone.txt");
+        assert_eq!(write(&gone, "x", false, false, Some(now)).unwrap_err(), "deleted on disk");
+        write(&gone, "x", false, false, None).unwrap();
+        assert_eq!(fs::read(&gone).unwrap(), b"x");
     }
 
     #[test]
