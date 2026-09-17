@@ -1,6 +1,10 @@
-// Step 1: the static three-view shell from the mockup. No state yet — this only
-// proves Vite + React + Tauri are wired together. Views arrive in later steps.
+// Step 2: the static shell from step 1 plus one real PTY pane filling the
+// content area. Tab switching, sidebar state and pane splits arrive later.
 import { Icon } from "./Icon";
+import { TerminalPane } from "./components/TerminalPane";
+
+// Hard-coded for this step; the sidebar supplies it from step 4.
+const CWD = String.raw`C:\Users\user\veal`;
 
 export default function App() {
   return (
@@ -12,7 +16,7 @@ export default function App() {
           <button className="tab" role="tab">Files <kbd>⌃2</kbd></button>
           <button className="tab" role="tab">Tasks <kbd>⌃3</kbd></button>
         </div>
-        <div className="topbar-right"><span className="pill">step 1</span></div>
+        <div className="topbar-right"><span className="pill">step 2</span></div>
       </header>
 
       <aside className="sidebar">
@@ -23,8 +27,8 @@ export default function App() {
       </aside>
 
       <main className="main">
-        <div className="toolbar"><span className="hint">Terminal view — PTY panes arrive in step 2</span></div>
-        <div className="empty">No panes yet</div>
+        <div className="toolbar"><span className="hint mono">{CWD}</span></div>
+        <TerminalPane cwd={CWD} />
       </main>
     </div>
   );
