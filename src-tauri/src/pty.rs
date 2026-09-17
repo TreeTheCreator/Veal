@@ -33,6 +33,8 @@ struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// The shell's pid; agent detection walks its descendants.
+    pid: Option<u32>,
 }
 
 #[derive(Default)]
@@ -107,6 +109,7 @@ impl PtyRegistry {
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
         let killer = child.clone_killer();
+        let pid = child.process_id();
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         self.panes.lock().unwrap().insert(
@@ -115,6 +118,7 @@ impl PtyRegistry {
                 master: pair.master,
                 writer,
                 killer,
+                pid,
             },
         );
 
@@ -190,6 +194,14 @@ impl PtyRegistry {
         for h in panes.values_mut() {
             let _ = h.killer.kill();
         }
+    }
+
+    /// `(pane id, shell pid)` for every live pane whose pid is known.
+    pub fn pids(&self) -> Vec<(u32, u32)> {
+        let panes = self.panes.lock().unwrap();
+        let mut v: Vec<_> = panes.iter().filter_map(|(id, h)| h.pid.map(|p| (*id, p))).collect();
+        v.sort_unstable();
+        v
     }
 
     #[cfg(test)]

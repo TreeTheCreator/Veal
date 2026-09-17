@@ -4,6 +4,7 @@ import { homeDir } from "@tauri-apps/api/path";
 import { useEffect, useState } from "react";
 import { PANE_CAP } from "../layout/tree";
 import { normalizePath, tilde } from "../paths";
+import { AGENTS } from "../pty";
 import { SHELL_CHOICES, useSettings, type ShellChoice } from "../settings/store";
 
 export function SettingsView() {
@@ -44,6 +45,10 @@ export function SettingsView() {
         <div className="srow">
           <div className="lbl"><b>Pane soft cap</b><span>New terminal is disabled past this</span></div>
           <span className="mono">{PANE_CAP}</span>
+        </div>
+        <div className="srow">
+          <div className="lbl"><b>Agent detection</b><span>Badge and sidebar dot follow the process tree, polled every 1.5 s</span></div>
+          <span className="mono">{AGENTS.join(" · ")}</span>
         </div>
         <div className="srow">
           <div className="lbl"><b>Task files</b><span>Per-project source of truth, git-trackable; the Inbox lives in veal.db</span></div>

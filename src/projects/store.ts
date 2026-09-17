@@ -66,15 +66,22 @@ export function projectForCwd(projects: Project[], cwd: string): Project | null 
 }
 
 /**
- * Ids of projects with a live agent pane: an `agent` pane whose spawn cwd is
- * the project root. Computed from cwd only — the multiplexer does not know
- * about projects (spec), so there is no projectId on panes.
+ * Projects with a live agent: a pane whose spawn cwd is the project root and
+ * whose shell has a *detected* agent under it (plan-08) — the manual label
+ * does not count. Computed from cwd only — the multiplexer does not know
+ * about projects (spec), so there is no projectId on panes. The value is the
+ * agent's name, for the dot's title.
  */
-export function liveProjectIds(tree: LayoutNode | null, projects: Project[]): Set<number> {
-  const agents = panes(tree).filter((p) => p.kind === "agent");
-  const live = new Set<number>();
+export function liveProjectIds(
+  tree: LayoutNode | null,
+  projects: Project[],
+  agents: Map<number, string>,
+): Map<number, string> {
+  const running = panes(tree).filter((p) => agents.has(p.id));
+  const live = new Map<number, string>();
   for (const project of projects) {
-    if (agents.some((p) => samePath(p.cwd, project.path))) live.add(project.id);
+    const pane = running.find((p) => samePath(p.cwd, project.path));
+    if (pane) live.set(project.id, agents.get(pane.id)!);
   }
   return live;
 }

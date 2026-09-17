@@ -53,7 +53,7 @@ export function TypePopover({ cwdLabel, defaultKind, onPick, onClose, className 
         <span className="sw" style={{ background: "var(--agent)" }} />
         <span>
           <b>Agent</b>
-          <small>Same PTY — you launch claude, aider, etc.</small>
+          <small>Label only — the badge follows what actually runs</small>
         </span>
       </button>
     </div>

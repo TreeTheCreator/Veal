@@ -1,3 +1,4 @@
+mod agents;
 mod db;
 mod fs;
 mod pty;
@@ -249,6 +250,12 @@ pub fn run() {
                 watch_root(app.handle(), &watchers, &project);
             }
             app.manage(watchers);
+            // Agent detection: the process tree under each pane's shell,
+            // polled; a change reaches JS as `pty-agent` (plan-08).
+            let handle = app.handle().clone();
+            agents::start(Arc::clone(&*app.state::<Arc<PtyRegistry>>()), move |a| {
+                let _ = handle.emit("pty-agent", a);
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

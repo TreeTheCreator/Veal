@@ -16,11 +16,36 @@ export interface PtySession {
   kill(): Promise<void>;
   /** Fires once when the child exits. Returns an unsubscribe function. */
   onExit(cb: (code: number | null) => void): () => void;
+  /**
+   * Fires when the agent CLI detected under this shell changes (plan-08):
+   * its name, or null once it exits. Returns an unsubscribe function.
+   */
+  onAgent(cb: (agent: string | null) => void): () => void;
 }
 
 interface PtyExit {
   id: number;
   code: number | null;
+}
+
+/** Mirrors `AGENTS` in src-tauri/src/agents.rs — display only; Rust decides. */
+export const AGENTS = ["claude", "codex", "aider", "gemini", "copilot", "amp", "goose", "opencode"];
+
+interface PaneAgent {
+  id: number;
+  agent: string | null;
+}
+
+// One app-wide listener for `pty-agent`, fanned out by PTY id. The PTY id is
+// not the pane id: the pane that owns the session maps it (TerminalPane).
+const agentHandlers = new Map<number, Set<(agent: string | null) => void>>();
+let agentListener: Promise<UnlistenFn> | null = null;
+
+function ensureAgentListener() {
+  agentListener ??= listen<PaneAgent>("pty-agent", (ev) => {
+    const { id, agent } = ev.payload;
+    agentHandlers.get(id)?.forEach((cb) => cb(agent));
+  });
 }
 
 // One app-wide listener for `pty-exit`, fanned out by pane id.
@@ -41,6 +66,7 @@ export async function spawnPty(
   onData: (bytes: Uint8Array) => void,
 ): Promise<PtySession> {
   ensureExitListener();
+  ensureAgentListener();
   // The Rust side sends raw bytes; they arrive as an ArrayBuffer.
   const out = new Channel<ArrayBuffer>();
   out.onmessage = (buf) => onData(new Uint8Array(buf));
@@ -56,6 +82,15 @@ export async function spawnPty(
       set.add(cb);
       return () => {
         exitHandlers.get(id)?.delete(cb);
+      };
+    },
+    onAgent(cb) {
+      let set = agentHandlers.get(id);
+      if (!set) agentHandlers.set(id, (set = new Set()));
+      set.add(cb);
+      return () => {
+        agentHandlers.get(id)?.delete(cb);
+        if (agentHandlers.get(id)?.size === 0) agentHandlers.delete(id);
       };
     },
   };

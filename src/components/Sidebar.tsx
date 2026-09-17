@@ -28,13 +28,14 @@ export function Sidebar({ onAddProject }: Props) {
   const setActive = useProjects((s) => s.setActive);
   const remove = useProjects((s) => s.remove);
   const tree = useLayout((s) => s.tree);
+  const agents = useLayout((s) => s.agents);
   const addPane = useLayout((s) => s.addPane);
   const defaultKind = useSettings((s) => s.defaultKind);
   const view = useUi((s) => s.view);
   const setView = useUi((s) => s.setView);
   const showToast = useUi((s) => s.showToast);
 
-  const live = useMemo(() => liveProjectIds(tree, projects), [tree, projects]);
+  const live = useMemo(() => liveProjectIds(tree, projects, agents), [tree, projects, agents]);
   const atCap = panes(tree).length >= PANE_CAP;
 
   const [spawnFor, setSpawnFor] = useState<number | null>(null);
@@ -83,7 +84,7 @@ export function Sidebar({ onAddProject }: Props) {
       </div>
       <ul className="projects">
         {projects.map((p) => {
-          const isLive = live.has(p.id);
+          const agent = live.get(p.id);
           return (
             <li key={p.id} className="project-row">
               <button
@@ -97,7 +98,7 @@ export function Sidebar({ onAddProject }: Props) {
                   <div className="name">{p.name}</div>
                   <div className="path">{tilde(p.path)}</div>
                 </span>
-                <span className={`dot${isLive ? " live" : ""}`} title={isLive ? "Agent running" : undefined} />
+                <span className={`dot${agent ? " live" : ""}`} title={agent ? `${agent} running` : undefined} />
                 <span
                   className="spawn"
                   role="button"

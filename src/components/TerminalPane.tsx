@@ -10,6 +10,7 @@ import { spawnPty, type PtySession } from "../pty";
 import { createResizeScheduler } from "../resize";
 import type { PaneNode } from "../layout/tree";
 import { basename, tilde } from "../paths";
+import { useLayout } from "../layout/store";
 import { projectForCwd, useProjects } from "../projects/store";
 import { shellForSpawn, useSettings } from "../settings/store";
 import { isViewShortcut } from "../ui";
@@ -22,6 +23,8 @@ const isWindows = navigator.userAgent.includes("Windows");
 
 interface Props {
   pane: PaneNode;
+  /** Detected agent CLI running under this pane's shell (plan-08), or null. */
+  agent: string | null;
   focused: boolean;
   style: CSSProperties;
   onFocus(): void;
@@ -29,8 +32,10 @@ interface Props {
   onFlip(): void;
 }
 
-export function TerminalPane({ pane, focused, style, onFocus, onClose, onFlip }: Props) {
+export function TerminalPane({ pane, agent, focused, style, onFocus, onClose, onFlip }: Props) {
   const { id, kind, cwd } = pane;
+  // A detected agent is red whatever the label says; the badge names it.
+  const accent = agent ? "agent" : kind;
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const onCloseRef = useRef(onClose);
@@ -138,6 +143,8 @@ export function TerminalPane({ pane, focused, style, onFocus, onClose, onFlip }:
             if (code === 0) onCloseRef.current();
             else setExitCode(code);
           }),
+          // Detection is keyed by PTY id in Rust; the layout keys by pane id.
+          s.onAgent((agent) => useLayout.getState().setAgent(id, agent)),
         );
       })
       .catch((e) => setError(String(e)));
@@ -159,21 +166,21 @@ export function TerminalPane({ pane, focused, style, onFocus, onClose, onFlip }:
 
   return (
     <div
-      className={`pane ${kind}${focused ? " focused" : ""}`}
+      className={`pane ${accent}${focused ? " focused" : ""}`}
       style={style}
       data-pane={id}
       onPointerDown={onFocus}
     >
       <div className="pane-head">
         <button
-          className={`badge flip ${kind}`}
-          title="Flip pane type"
+          className={`badge flip ${accent}`}
+          title={agent ? `${agent} running · click to flip the label` : "Flip pane type"}
           onClick={(e) => {
             e.stopPropagation();
             onFlip();
           }}
         >
-          {kind}
+          {agent ?? kind}
         </button>
         <span className="pname">{projectName}</span>
         <span className="cwd" title={cwd}>{tilde(cwd)}</span>

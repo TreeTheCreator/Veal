@@ -14,6 +14,7 @@ function toStyle(r: Rect): CSSProperties {
 export function PaneLayout({ emptyHint }: { emptyHint: string }) {
   const tree = useLayout((s) => s.tree);
   const focused = useLayout((s) => s.focused);
+  const agents = useLayout((s) => s.agents);
   const { closePane, flipKind, focus } = useLayout.getState();
 
   const hostRef = useRef<HTMLDivElement>(null);
@@ -48,6 +49,7 @@ export function PaneLayout({ emptyHint }: { emptyHint: string }) {
           <TerminalPane
             key={p.id}
             pane={p}
+            agent={agents.get(p.id) ?? null}
             focused={p.id === focused}
             style={toStyle(geo.panes.get(p.id)!)}
             onFocus={() => focus(p.id)}

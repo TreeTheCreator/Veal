@@ -18,10 +18,14 @@ interface LayoutState {
   tree: LayoutNode | null;
   focused: number | null;
   nextId: number;
+  /** Detected agent per pane id (plan-08); runtime only, never in the snapshot. */
+  agents: Map<number, string>;
   /** Returns the new pane's id, or null when the soft cap is reached. */
   addPane(kind: PaneKind, cwd: string): number | null;
   closePane(id: number): void;
   flipKind(id: number): void;
+  /** From `pty-agent`: `null` clears. */
+  setAgent(id: number, agent: string | null): void;
   focus(id: number): void;
   setWeights(path: Path, index: number, a: number): void;
 }
@@ -30,6 +34,7 @@ export const useLayout = create<LayoutState>((set, get) => ({
   tree: null,
   focused: null,
   nextId: 1,
+  agents: new Map(),
 
   addPane(kind, cwd) {
     const { tree, nextId } = get();
@@ -40,12 +45,15 @@ export const useLayout = create<LayoutState>((set, get) => ({
   },
 
   closePane(id) {
-    const { tree, focused } = get();
+    const { tree, focused, agents } = get();
     const next = remove(tree, id);
     if (next === tree) return;
+    const rest = new Map(agents);
+    rest.delete(id);
     set({
       tree: next,
       focused: focused === id ? (panes(next)[0]?.id ?? null) : focused,
+      agents: rest,
     });
   },
 
@@ -54,6 +62,15 @@ export const useLayout = create<LayoutState>((set, get) => ({
     const current = panes(tree).find((p) => p.id === id);
     if (!current) return;
     set({ tree: setKind(tree, id, current.kind === "agent" ? "shell" : "agent") });
+  },
+
+  setAgent(id, agent) {
+    const { agents } = get();
+    if ((agents.get(id) ?? null) === agent) return;
+    const next = new Map(agents);
+    if (agent === null) next.delete(id);
+    else next.set(id, agent);
+    set({ agents: next });
   },
 
   focus(id) {
