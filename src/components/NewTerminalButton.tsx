@@ -1,6 +1,8 @@
-// "+ New terminal" with the mockup's type popover (Shell / Agent).
-import { useEffect, useRef, useState } from "react";
+// "+ New terminal" with the type popover (Shell / Agent).
+import { useCallback, useState } from "react";
 import type { PaneKind } from "../layout/tree";
+import { useSettings } from "../settings/store";
+import { TypePopover } from "./TypePopover";
 
 interface Props {
   disabled: boolean;
@@ -10,56 +12,24 @@ interface Props {
 
 export function NewTerminalButton({ disabled, cwdLabel, onPick }: Props) {
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const firstRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    firstRef.current?.focus();
-    const onDown = (e: PointerEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("pointerdown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const pick = (kind: PaneKind) => {
-    setOpen(false);
-    onPick(kind);
-  };
+  const defaultKind = useSettings((s) => s.defaultKind);
+  const close = useCallback(() => setOpen(false), []);
 
   return (
-    <div className="new-terminal" ref={wrapRef}>
+    <div className="new-terminal">
       <button className="btn primary" disabled={disabled} onClick={() => setOpen((o) => !o)}>
         + New terminal
       </button>
       {open && (
-        <div className="popover open" role="menu">
-          <div className="ttl">
-            New terminal in <span className="mono">{cwdLabel}</span>
-          </div>
-          <button className="opt" role="menuitem" ref={firstRef} onClick={() => pick("shell")}>
-            <span className="sw" style={{ background: "var(--shell)" }} />
-            <span>
-              <b>Shell</b>
-              <small>pwsh in the project root</small>
-            </span>
-          </button>
-          <button className="opt" role="menuitem" onClick={() => pick("agent")}>
-            <span className="sw" style={{ background: "var(--agent)" }} />
-            <span>
-              <b>Agent</b>
-              <small>Same PTY — you launch claude, aider, etc.</small>
-            </span>
-          </button>
-        </div>
+        <TypePopover
+          cwdLabel={cwdLabel}
+          defaultKind={defaultKind}
+          onClose={close}
+          onPick={(kind) => {
+            setOpen(false);
+            onPick(kind);
+          }}
+        />
       )}
     </div>
   );

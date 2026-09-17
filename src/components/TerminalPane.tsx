@@ -9,24 +9,16 @@ import "@xterm/xterm/css/xterm.css";
 import { spawnPty, type PtySession } from "../pty";
 import { createResizeScheduler } from "../resize";
 import type { PaneNode } from "../layout/tree";
+import { basename, tilde } from "../paths";
+import { projectForCwd, useProjects } from "../projects/store";
+import { shellForSpawn, useSettings } from "../settings/store";
+import { isViewShortcut } from "../ui";
 
 // Fallback when the container has no layout yet at first fit().
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 30;
 
 const isWindows = navigator.userAgent.includes("Windows");
-
-// Project name until the sidebar supplies one (step 4).
-export function basename(path: string): string {
-  const parts = path.split(/[\\/]+/).filter(Boolean);
-  return parts[parts.length - 1] ?? path;
-}
-
-// Tauri only sets HOME-style tilde on unix; do it by hand for display.
-function tilde(path: string): string {
-  const m = path.match(/^([A-Za-z]:[\\/]Users[\\/][^\\/]+)(.*)$/);
-  return m ? `~${m[2]}` : path;
-}
 
 interface Props {
   pane: PaneNode;
@@ -45,6 +37,8 @@ export function TerminalPane({ pane, focused, style, onFocus, onClose, onFlip }:
   onCloseRef.current = onClose;
   const [exitCode, setExitCode] = useState<number | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
+  // Sidebar project name for the header; basename when the pane is elsewhere.
+  const projectName = useProjects((s) => projectForCwd(s.projects, cwd)?.name ?? basename(cwd));
 
   useEffect(() => {
     const host = hostRef.current;
@@ -66,6 +60,8 @@ export function TerminalPane({ pane, focused, style, onFocus, onClose, onFlip }:
       windowsPty: isWindows ? { backend: "conpty", buildNumber: 26200 } : undefined,
     });
     termRef.current = term;
+    // Let Ctrl+1/2/3 reach the window listener (view switching) instead of the shell.
+    term.attachCustomKeyEventHandler((e) => !isViewShortcut(e));
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
@@ -86,6 +82,18 @@ export function TerminalPane({ pane, focused, style, onFocus, onClose, onFlip }:
     let session: PtySession | null = null;
     let disposed = false;
     const disposables: Array<() => void> = [];
+
+    // Wire input before spawning. ConPTY's conhost opens with a cursor-position
+    // query (ESC [ 6 n) and stalls all output until the terminal answers it;
+    // when several panes spawn at once (layout restore) that query can reach
+    // xterm before pty_spawn resolves, so replies are queued until it does.
+    const pendingInput: string[] = [];
+    disposables.push(
+      term.onData((d) => {
+        if (session) session.write(d).catch((e) => console.warn("pty_write", e));
+        else pendingInput.push(d);
+      }).dispose,
+    );
 
     // Dev-only hook so panes can be driven and inspected over CDP.
     if (import.meta.env.DEV) {
@@ -110,18 +118,20 @@ export function TerminalPane({ pane, focused, style, onFocus, onClose, onFlip }:
     });
     observer.observe(host);
 
-    spawnPty({ cwd, cols, rows }, (bytes) => term.write(bytes))
+    // The shell setting is read at spawn time: it applies to new panes only.
+    const shell = shellForSpawn(useSettings.getState().shell);
+    spawnPty({ cwd, cols, rows, shell }, (bytes) => term.write(bytes))
       .then((s) => {
         if (disposed) {
           s.kill().catch(() => {});
           return;
         }
         session = s;
+        for (const d of pendingInput.splice(0)) s.write(d).catch((e) => console.warn("pty_write", e));
         // The pane may have been resized while spawn was in flight.
         if (term.cols !== cols || term.rows !== rows) {
           resizer.schedule({ cols: term.cols, rows: term.rows });
         }
-        disposables.push(term.onData((d) => s.write(d).catch((e) => console.warn("pty_write", e))).dispose);
         disposables.push(
           s.onExit((code) => {
             // A clean `exit` closes the pane; anything else stays visible.
@@ -165,7 +175,7 @@ export function TerminalPane({ pane, focused, style, onFocus, onClose, onFlip }:
         >
           {kind}
         </button>
-        <span className="pname">{basename(cwd)}</span>
+        <span className="pname">{projectName}</span>
         <span className="cwd" title={cwd}>{tilde(cwd)}</span>
         <button
           className="close"

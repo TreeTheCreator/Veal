@@ -1,7 +1,10 @@
+mod db;
 mod pty;
 
+use db::{Db, Project};
 use pty::{PtyRegistry, SpawnOptions};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{Emitter, Manager, State, WindowEvent};
@@ -62,12 +65,68 @@ fn pty_kill(registry: State<'_, Arc<PtyRegistry>>, id: u32) -> Result<(), String
     registry.kill(id)
 }
 
+// ---- persistence (src/db.rs) ----
+
+#[tauri::command]
+fn projects_list(db: State<'_, Db>) -> Result<Vec<Project>, String> {
+    db.projects_list()
+}
+
+#[tauri::command]
+fn projects_add(db: State<'_, Db>, name: String, path: String) -> Result<Project, String> {
+    db.projects_add(&name, &path)
+}
+
+#[tauri::command]
+fn projects_remove(db: State<'_, Db>, id: u32) -> Result<(), String> {
+    db.projects_remove(id)
+}
+
+#[tauri::command]
+fn settings_get_all(db: State<'_, Db>) -> Result<HashMap<String, String>, String> {
+    db.settings_get_all()
+}
+
+#[tauri::command]
+fn settings_set(db: State<'_, Db>, key: String, value: String) -> Result<(), String> {
+    db.settings_set(&key, &value)
+}
+
+/// `"dir"`, `"file"` or `"missing"`; feeds the add-project hint.
+#[tauri::command]
+fn path_kind(path: String) -> &'static str {
+    let p = std::path::Path::new(path.trim());
+    if p.is_dir() {
+        "dir"
+    } else if p.is_file() {
+        "file"
+    } else {
+        "missing"
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(PtyRegistry::default()))
+        .setup(|app| {
+            // %APPDATA%\com.veal.app\veal.db on Windows.
+            let path = app.path().app_data_dir()?.join("veal.db");
+            app.manage(Db::open(&path)?);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-            pty_spawn, pty_write, pty_resize, pty_kill
+            pty_spawn,
+            pty_write,
+            pty_resize,
+            pty_kill,
+            projects_list,
+            projects_add,
+            projects_remove,
+            settings_get_all,
+            settings_set,
+            path_kind,
         ])
         .on_window_event(|window, event| {
             // Kill every shell/agent before the window goes, so nothing is orphaned.

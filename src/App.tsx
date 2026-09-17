@@ -1,54 +1,161 @@
-// Step 3: the static shell plus a resizable split tree of PTY panes in the
-// content area. Tab switching and sidebar state arrive in step 4.
-import { useEffect } from "react";
+// Step 4: the shell with a live sidebar, view switching and persistence.
+// Boot loads settings + projects from SQLite, restores the pane layout (or
+// opens one shell in the active project), then starts writing layout changes
+// back. All views stay mounted; inactive ones are hidden with `visibility`
+// so the terminal container keeps its size and no PTY is ever unmounted.
+import { useCallback, useEffect, useState } from "react";
 import { Icon } from "./Icon";
+import { AddProjectModal } from "./components/AddProjectModal";
 import { NewTerminalButton } from "./components/NewTerminalButton";
 import { PaneLayout } from "./components/PaneLayout";
+import { SettingsView } from "./components/SettingsView";
+import { Sidebar } from "./components/Sidebar";
+import { Toast } from "./components/Toast";
+import { LAYOUT_KEY, parseLayout, startLayoutPersistence } from "./layout/persist";
 import { selectPaneCount, useLayout } from "./layout/store";
 import { PANE_CAP } from "./layout/tree";
+import { tilde } from "./paths";
+import { selectActive, useProjects } from "./projects/store";
+import { useSettings } from "./settings/store";
+import { TAB_VIEWS, useUi, viewForShortcut, type View } from "./ui";
 
-// Hard-coded for this step; the sidebar supplies it from step 4.
-const CWD = String.raw`C:\Users\user\veal`;
-const CWD_LABEL = "~\\veal";
+const TAB_LABEL: Record<View, string> = { terminal: "Terminal", files: "Files", tasks: "Tasks", settings: "Settings" };
+
+// StrictMode runs effects twice in dev; the restore must happen once.
+let bootStarted = false;
+
+async function boot() {
+  const [settings] = await Promise.all([useSettings.getState().load(), useProjects.getState().load()]);
+  const restored = useSettings.getState().restoreLayout ? parseLayout(settings[LAYOUT_KEY]) : null;
+  if (restored) {
+    useLayout.setState(restored);
+  } else {
+    const active = selectActive(useProjects.getState());
+    if (active) useLayout.getState().addPane("shell", active.path);
+  }
+  startLayoutPersistence();
+}
 
 export default function App() {
   const count = useLayout(selectPaneCount);
   const addPane = useLayout((s) => s.addPane);
-  const atCap = count >= PANE_CAP;
+  const active = useProjects(selectActive);
+  const loaded = useProjects((s) => s.loaded);
+  const view = useUi((s) => s.view);
+  const setView = useUi((s) => s.setView);
+  const [ready, setReady] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const closeAdd = useCallback(() => setAdding(false), []);
 
-  // Open straight into a prompt, like step 2.
   useEffect(() => {
-    if (useLayout.getState().tree === null) addPane("shell", CWD);
-  }, [addPane]);
+    if (bootStarted) return;
+    bootStarted = true;
+    boot()
+      .catch((e) => console.error("boot", e))
+      .finally(() => setReady(true));
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const v = viewForShortcut(e);
+      if (v) {
+        e.preventDefault();
+        setView(v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setView]);
+
+  const atCap = count >= PANE_CAP;
+  const cwdLabel = active ? tilde(active.path) : null;
+  const hint = !cwdLabel
+    ? loaded
+      ? "Pin a project to open a terminal"
+      : ""
+    : atCap
+      ? `Soft cap of ${PANE_CAP} reached`
+      : `Opens in ${cwdLabel}`;
 
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand"><Icon name="term" size={20} />veal <small>0.1</small></div>
         <div className="tabs" role="tablist">
-          <button className="tab active" role="tab">Terminal <kbd>⌃1</kbd></button>
-          <button className="tab" role="tab">Files <kbd>⌃2</kbd></button>
-          <button className="tab" role="tab">Tasks <kbd>⌃3</kbd></button>
+          {TAB_VIEWS.map((v, i) => (
+            <button
+              key={v}
+              className={`tab${view === v ? " active" : ""}`}
+              role="tab"
+              aria-selected={view === v}
+              onClick={() => setView(v)}
+            >
+              {TAB_LABEL[v]} <kbd>⌃{i + 1}</kbd>
+            </button>
+          ))}
         </div>
         <div className="topbar-right"><span className="mono">{count}/{PANE_CAP} panes</span></div>
       </header>
 
-      <aside className="sidebar">
-        <div className="side-head"><span>Pinned projects</span><span className="count">0</span></div>
-        <ul className="projects" />
-        <button className="add-project"><span className="plus">+</span>Add project</button>
-        <div className="side-foot"><button className="settings-btn"><Icon name="gear" />Settings</button></div>
-      </aside>
+      <Sidebar onAddProject={() => setAdding(true)} />
 
       <main className="main">
-        <div className="toolbar">
-          <NewTerminalButton disabled={atCap} cwdLabel={CWD_LABEL} onPick={(kind) => addPane(kind, CWD)} />
-          <span className="hint">{atCap ? `Soft cap of ${PANE_CAP} reached` : `Opens in ${CWD_LABEL}`}</span>
-          <span className="grow" />
-          <span className="hint">Drag the dividers to resize · click a badge to flip agent ⇄ shell</span>
+        <div className="views">
+          <section className={`view${view === "terminal" ? " active" : ""}`} aria-hidden={view !== "terminal"}>
+            <div className="toolbar">
+              <NewTerminalButton
+                disabled={!active || atCap}
+                cwdLabel={cwdLabel ?? ""}
+                onPick={(kind) => active && addPane(kind, active.path)}
+              />
+              <span className="hint">{hint}</span>
+              <span className="grow" />
+              <span className="hint">Drag the dividers to resize · click a badge to flip agent ⇄ shell</span>
+            </div>
+            {/* Mount the layout only once the restore has run, so the seed pane is never raced. */}
+            {ready && (
+              <PaneLayout
+                emptyHint={cwdLabel ? `New terminal spawns a PTY in ${cwdLabel}` : "Pin a project to open a terminal"}
+              />
+            )}
+          </section>
+
+          <section className={`view${view === "files" ? " active" : ""}`} aria-hidden={view !== "files"}>
+            <div className="toolbar">
+              <span>Root</span>
+              <span className="mono" style={{ color: "var(--text)" }}>{cwdLabel ?? "—"}</span>
+              <span className="grow" />
+              <span className="hint">Read-only · CodeMirror viewer (step 5)</span>
+            </div>
+            <div className="empty">
+              <div>
+                Pick a file from the tree.
+                <br />
+                <span className="hint">The file tree and viewer arrive in step 5.</span>
+              </div>
+            </div>
+          </section>
+
+          <section className={`view${view === "tasks" ? " active" : ""}`} aria-hidden={view !== "tasks"}>
+            <div className="toolbar">
+              <div className="seg" aria-disabled="true">
+                <button className="on" disabled>{active?.name ?? "This project"}</button>
+                <button disabled>All projects</button>
+              </div>
+              <span className="grow" />
+              <span className="hint">.veal/tasks.json per project (step 6)</span>
+            </div>
+            <div className="empty">Tasks arrive in step 6.</div>
+          </section>
+
+          <section className={`view settings-view${view === "settings" ? " active" : ""}`} aria-hidden={view !== "settings"}>
+            <SettingsView />
+          </section>
         </div>
-        <PaneLayout emptyHint={`New terminal spawns a PTY in ${CWD_LABEL}`} />
       </main>
+
+      {adding && <AddProjectModal onClose={closeAdd} />}
+      <Toast />
     </div>
   );
 }

@@ -81,6 +81,12 @@ impl PtyRegistry {
         mut on_data: impl FnMut(Vec<u8>) + Send + 'static,
         on_exit: impl FnOnce(u32, Option<i32>) + Send + 'static,
     ) -> Result<u32, String> {
+        // Windows shells silently fall back to the profile directory when the
+        // cwd is gone (a restored pane whose project was deleted); fail loudly
+        // instead so the pane shows its error footer.
+        if !std::path::Path::new(&opts.cwd).is_dir() {
+            return Err(format!("no such directory: {}", opts.cwd));
+        }
         let pair = native_pty_system()
             .openpty(size(opts.cols, opts.rows))
             .map_err(|e| e.to_string())?;
@@ -296,6 +302,29 @@ mod tests {
             .expect("pty-exit within 10s");
         assert_eq!(code, Some(0));
         assert!(!registry.contains(id), "handle removed after exit");
+    }
+
+    #[test]
+    fn missing_cwd_is_an_error_not_a_fallback() {
+        let registry = Arc::new(PtyRegistry::default());
+        let cwd = std::env::temp_dir()
+            .join(format!("veal-pty-missing-{}", std::process::id()))
+            .to_string_lossy()
+            .into_owned();
+        let err = registry
+            .spawn(
+                SpawnOptions {
+                    cwd: cwd.clone(),
+                    cols: 80,
+                    rows: 24,
+                    shell: Some(echo_shell()),
+                },
+                |_| {},
+                |_, _| {},
+            )
+            .unwrap_err();
+        assert_eq!(err, format!("no such directory: {cwd}"));
+        assert!(!registry.contains(1), "nothing should be registered");
     }
 
     #[test]

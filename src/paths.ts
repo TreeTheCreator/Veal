@@ -1,0 +1,55 @@
+// Path helpers shared by the sidebar, pane headers and the add-project modal.
+// Pure and Windows-aware (case-insensitive, either separator).
+
+const SEPS = /[\\/]+/;
+
+export function basename(path: string): string {
+  const parts = path.split(SEPS).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+/** Tauri only sets HOME-style tilde on unix; do it by hand for display. */
+export function tilde(path: string): string {
+  const m = path.match(/^([A-Za-z]:[\\/]Users[\\/][^\\/]+)(.*)$/);
+  return m ? `~${m[2]}` : path;
+}
+
+/**
+ * Strips trailing separators and, for a drive-letter path, turns `/` into `\`
+ * so a typed `C:/x/` pins as `C:\x`. A bare drive root (`C:\`) stays intact.
+ */
+export function normalizePath(path: string): string {
+  let trimmed = path.trim().replace(/[\\/]+$/, "");
+  if (/^[A-Za-z]:/.test(trimmed)) trimmed = trimmed.replace(/\//g, "\\");
+  return /^[A-Za-z]:$/.test(trimmed) ? `${trimmed}\\` : trimmed;
+}
+
+/** `C:\Users\user\veal\` and `c:/users/user/veal` are the same directory. */
+export function samePath(a: string, b: string): boolean {
+  const key = (p: string) => normalizePath(p).replace(/\//g, "\\").toLowerCase();
+  return key(a) === key(b);
+}
+
+export function joinPath(dir: string, name: string): string {
+  const sep = dir.includes("/") && !dir.includes("\\") ? "/" : "\\";
+  return `${normalizePath(dir)}${sep}${name}`;
+}
+
+export interface ProjectDraft {
+  name: string;
+  path: string;
+  /** True when the root was left blank, i.e. the directory will be created under `home`. */
+  created: boolean;
+}
+
+/**
+ * The add-project modal's derivations (from the mockup): blank root → `~\name`,
+ * blank name → basename(root), both blank → nothing to submit.
+ */
+export function deriveProject(name: string, root: string, home: string): ProjectDraft | null {
+  const n = name.trim();
+  const r = normalizePath(root);
+  if (!n && !r) return null;
+  if (!r) return { name: n, path: joinPath(home, n), created: true };
+  return { name: n || basename(r), path: r, created: false };
+}
