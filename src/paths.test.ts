@@ -52,6 +52,14 @@ describe("deriveProject", () => {
       created: false,
     });
   });
+  it("relative root -> under home, to be created (plan-16)", () => {
+    expect(deriveProject("", "foo", HOME)).toEqual({ name: "foo", path: "C:\\Users\\user\\foo", created: true });
+    expect(deriveProject("x", "a/b", HOME)).toEqual({ name: "x", path: "C:\\Users\\user\\a/b", created: true });
+    // Absolute roots are unchanged; `..` is left for Rust to refuse.
+    expect(deriveProject("", "D:\\work", HOME)?.path).toBe("D:\\work");
+    expect(deriveProject("", "\\\\srv\\share\\a", HOME)?.created).toBe(false);
+    expect(deriveProject("", "..", HOME)?.path).toBe("C:\\Users\\user\\..");
+  });
   it("both blank -> nothing to submit", () => {
     expect(deriveProject("  ", " ", HOME)).toBeNull();
   });

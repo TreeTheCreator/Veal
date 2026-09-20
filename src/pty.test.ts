@@ -16,7 +16,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 
-const { spawnPty } = await import("./pty");
+const { resetSessions, spawnPty } = await import("./pty");
 
 const fire = (name: string, payload: unknown) => events.get(name)!({ payload });
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -168,5 +168,26 @@ describe("pty output drain (plan-15)", () => {
     await s.kill();
     fire("pty-data", { id: s.id });
     expect(reads()).toBe(1);
+  });
+});
+
+describe("resetSessions (plan-16)", () => {
+  it("kills everything in Rust and forgets early exits and drains", async () => {
+    const s = await spawn();
+    await tick();
+    fire("pty-exit", { id: s.id + 50, code: 1 }); // remembered as an early exit
+    await resetSessions();
+    expect(invoke).toHaveBeenCalledWith("pty_reset", undefined);
+    // The remembered exit is gone: a session with that id sees nothing.
+    invoke.mockImplementation(async (cmd) => (cmd === "pty_spawn" ? s.id + 50 : undefined));
+    const t = await spawn();
+    const got: unknown[] = [];
+    t.onExit((c) => got.push(c));
+    await tick();
+    expect(got).toEqual([]);
+    // The old drain is gone: a signal for the old id reads nothing.
+    const before = reads();
+    fire("pty-data", { id: s.id });
+    expect(reads()).toBe(before);
   });
 });

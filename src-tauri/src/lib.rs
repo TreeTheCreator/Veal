@@ -43,7 +43,7 @@ fn watch_root(app: &tauri::AppHandle, watchers: &Watchers, project: &Project) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn pty_spawn(
     app: tauri::AppHandle,
     registry: State<'_, Arc<PtyRegistry>>,
@@ -73,17 +73,25 @@ fn pty_spawn(
 
 /// Raw bytes reach JS as an ArrayBuffer over the ipc protocol; xterm decodes
 /// UTF-8 itself, so a take boundary inside a multibyte sequence is harmless.
-#[tauri::command]
+#[tauri::command(async)]
 fn pty_read(registry: State<'_, Arc<PtyRegistry>>, id: u32) -> Response {
     Response::new(registry.take(id))
 }
 
-#[tauri::command]
-fn pty_write(registry: State<'_, Arc<PtyRegistry>>, id: u32, data: String) -> Result<(), String> {
-    registry.write(id, data.as_bytes())
+// Every command is `async` so it runs on the async runtime, not the main
+// thread (plan-16): one blocking call no longer stalls every other pane
+// and view. The two calls known to block for seconds — a write to a child
+// that has stopped reading, a Recycle-Bin delete of a big tree — also
+// leave the runtime's workers via `spawn_blocking`.
+#[tauri::command(async)]
+async fn pty_write(registry: State<'_, Arc<PtyRegistry>>, id: u32, data: String) -> Result<(), String> {
+    let registry = Arc::clone(&registry);
+    tauri::async_runtime::spawn_blocking(move || registry.write(id, data.as_bytes()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn pty_resize(
     registry: State<'_, Arc<PtyRegistry>>,
     id: u32,
@@ -93,19 +101,28 @@ fn pty_resize(
     registry.resize(id, cols, rows)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn pty_kill(registry: State<'_, Arc<PtyRegistry>>, id: u32) -> Result<(), String> {
     registry.kill(id)
 }
 
+/// A fresh page (F5, "Refresh", the dev loop's full reload) finds the
+/// previous page's shells still registered: React cleanup never ran on
+/// unload. The boot kills them all before the restore spawns new ones
+/// (plan-16).
+#[tauri::command(async)]
+fn pty_reset(registry: State<'_, Arc<PtyRegistry>>) {
+    registry.kill_all();
+}
+
 // ---- persistence (src/db.rs) ----
 
-#[tauri::command]
+#[tauri::command(async)]
 fn projects_list(db: State<'_, Db>) -> Result<Vec<Project>, String> {
     db.projects_list()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn projects_add(
     app: tauri::AppHandle,
     db: State<'_, Db>,
@@ -118,24 +135,24 @@ fn projects_add(
     Ok(project)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn projects_remove(db: State<'_, Db>, watchers: State<'_, Watchers>, id: u32) -> Result<(), String> {
     watchers.unwatch(id);
     db.projects_remove(id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn settings_get_all(db: State<'_, Db>) -> Result<HashMap<String, String>, String> {
     db.settings_get_all()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn settings_set(db: State<'_, Db>, key: String, value: String) -> Result<(), String> {
     db.settings_set(&key, &value)
 }
 
 /// `"dir"`, `"file"` or `"missing"`; feeds the add-project hint.
-#[tauri::command]
+#[tauri::command(async)]
 fn path_kind(path: String) -> &'static str {
     let p = std::path::Path::new(path.trim());
     if p.is_dir() {
@@ -149,17 +166,17 @@ fn path_kind(path: String) -> &'static str {
 
 // ---- files view (src/fs.rs) ----
 
-#[tauri::command]
+#[tauri::command(async)]
 fn fs_list(db: State<'_, Db>, dir: String) -> Result<Vec<fs::Entry>, String> {
     fs::list(&fs::confine(&db, &dir)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn fs_read(db: State<'_, Db>, path: String) -> Result<fs::FileText, String> {
     fs::read(&fs::confine(&db, &path)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn fs_write(
     db: State<'_, Db>,
     path: String,
@@ -183,23 +200,28 @@ fn fs_write(
 
 // The confined path is canonical (`\\?\C:\…` on Windows); JS keeps the
 // path it sent, so the new path is built from that, not from the result.
-#[tauri::command]
+#[tauri::command(async)]
 fn fs_create(db: State<'_, Db>, dir: String, name: String, kind: String) -> Result<String, String> {
     fs::create(&fs::confine(&db, &dir)?, &name, &kind)?;
     Ok(std::path::Path::new(dir.trim()).join(&name).to_string_lossy().into_owned())
 }
 
-#[tauri::command]
+// Rename and delete act on the entry itself (plan-16): a junction or
+// symlink is renamed or trashed, never what it points to.
+#[tauri::command(async)]
 fn fs_rename(db: State<'_, Db>, path: String, name: String) -> Result<String, String> {
-    fs::rename(&fs::confine(&db, &path)?, &name)?;
+    fs::rename(&fs::confine_entry(&db, &path)?, &name)?;
     let src = std::path::Path::new(path.trim());
     let parent = src.parent().ok_or_else(|| format!("no parent: {path}"))?;
     Ok(parent.join(&name).to_string_lossy().into_owned())
 }
 
-#[tauri::command]
-fn fs_delete(db: State<'_, Db>, path: String) -> Result<(), String> {
-    fs::delete(&fs::confine(&db, &path)?)
+#[tauri::command(async)]
+async fn fs_delete(db: State<'_, Db>, path: String) -> Result<(), String> {
+    let entry = fs::confine_entry(&db, &path)?;
+    tauri::async_runtime::spawn_blocking(move || fs::delete(&entry))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 // ---- tasks view (src/tasks.rs + the Inbox in src/db.rs) ----
@@ -210,7 +232,7 @@ fn task_root(db: &Db, root: Option<String>) -> Result<Option<std::path::PathBuf>
     root.map(|r| fs::confine(db, &r)).transpose()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tasks_list(db: State<'_, Db>, lock: State<'_, TasksLock>, root: Option<String>) -> Result<Vec<Task>, String> {
     let _g = lock.0.lock().unwrap_or_else(|p| p.into_inner());
     match task_root(&db, root)? {
@@ -219,7 +241,7 @@ fn tasks_list(db: State<'_, Db>, lock: State<'_, TasksLock>, root: Option<String
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tasks_add(
     db: State<'_, Db>,
     lock: State<'_, TasksLock>,
@@ -234,7 +256,7 @@ fn tasks_add(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tasks_set_status(
     db: State<'_, Db>,
     lock: State<'_, TasksLock>,
@@ -249,7 +271,7 @@ fn tasks_set_status(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tasks_set_title(
     db: State<'_, Db>,
     lock: State<'_, TasksLock>,
@@ -264,7 +286,7 @@ fn tasks_set_title(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tasks_shift(
     db: State<'_, Db>,
     lock: State<'_, TasksLock>,
@@ -279,7 +301,7 @@ fn tasks_shift(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn tasks_remove(
     db: State<'_, Db>,
     lock: State<'_, TasksLock>,
@@ -296,6 +318,16 @@ fn tasks_remove(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // First, as its docs require (plan-16): a second launch focuses the
+        // running window and exits, instead of a second window on the same
+        // database and a second set of shells. Veal takes no argv.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(PtyRegistry::default()))
         .manage(TasksLock::default())
@@ -327,6 +359,7 @@ pub fn run() {
             pty_write,
             pty_resize,
             pty_kill,
+            pty_reset,
             projects_list,
             projects_add,
             projects_remove,

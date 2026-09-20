@@ -22,6 +22,20 @@ export function viewForShortcut(e: KeyboardEvent): View | null {
   return isViewShortcut(e) ? TAB_VIEWS[Number(e.key) - 1] : null;
 }
 
+export type TerminalKeyAction = "copy" | "view" | "pass";
+
+/**
+ * What a keydown over a terminal does before xterm sees it (plan-16):
+ * Ctrl+C or Ctrl+Shift+C with a selection copies it (as Windows Terminal
+ * does) instead of sending ^C; a view shortcut goes to the window; the
+ * rest, including Ctrl+C with nothing selected, reaches the shell.
+ */
+export function terminalKeyAction(e: KeyboardEvent, hasSelection: boolean): TerminalKeyAction {
+  if (isViewShortcut(e)) return "view";
+  if (hasSelection && e.ctrlKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "c") return "copy";
+  return "pass";
+}
+
 /** Mockup toast: 2200 ms, replaces any toast still showing. */
 const TOAST_MS = 2200;
 

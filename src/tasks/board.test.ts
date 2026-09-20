@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { Task } from "./api";
 import { backward, columns, forward, isEmpty, today } from "./board";
 
-const veal = { id: 1, name: "veal", path: "C:\\Users\\user\\veal" };
-const hungy = { id: 2, name: "hungy", path: "C:\\Users\\user\\hungy" };
+const veal = { id: 1, name: "veal", path: "C:\\Users\\user\\veal", missing: false };
+const hungy = { id: 2, name: "hungy", path: "C:\\Users\\user\\hungy", missing: false };
 const t = (id: string, status: Task["status"]): Task => ({ id, title: id, status, created: "2026-09-17" });
 
 const sources = [

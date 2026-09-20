@@ -96,7 +96,8 @@ export function dragWeight(
 ): number {
   const total = weights.reduce((a, b) => a + b, 0);
   const pair = weights[index] + weights[index + 1];
-  const delta = spanPx > 0 ? (deltaPx / spanPx) * total : 0;
+  // A non-finite delta (plan-16) keeps the weight where it is.
+  const delta = spanPx > 0 && Number.isFinite(deltaPx) ? (deltaPx / spanPx) * total : 0;
   const a = weights[index] + delta;
   return Math.max(pair * minShare, Math.min(pair * (1 - minShare), a));
 }

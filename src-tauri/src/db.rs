@@ -29,6 +29,9 @@ pub struct Project {
     pub id: u32,
     pub name: String,
     pub path: String,
+    /// The root is not a directory right now (plan-16): renamed away,
+    /// on an unplugged drive. Checked at list time; the pin stands.
+    pub missing: bool,
 }
 
 pub struct Db {
@@ -76,16 +79,21 @@ impl Db {
     // ---- projects ----
 
     pub fn projects_list(&self) -> Result<Vec<Project>, String> {
-        let conn = self.lock();
+        Self::projects_list_locked(&self.lock())
+    }
+
+    fn projects_list_locked(conn: &Connection) -> Result<Vec<Project>, String> {
         let mut stmt = conn
             .prepare("SELECT id, name, path FROM projects ORDER BY position")
             .map_err(sql_err)?;
         let rows = stmt
             .query_map([], |r| {
+                let path: String = r.get(2)?;
                 Ok(Project {
                     id: r.get(0)?,
                     name: r.get(1)?,
-                    path: r.get(2)?,
+                    missing: !Path::new(&path).is_dir(),
+                    path,
                 })
             })
             .map_err(sql_err)?;
@@ -100,12 +108,29 @@ impl Db {
             return Err("name and path are required".into());
         }
         let p = Path::new(&path);
+        // The boundary (plan-16): a relative path would resolve against the
+        // exe's cwd (System32 from the Start menu), and `..` could climb
+        // out of whatever the modal resolved it under.
+        if !p.is_absolute() {
+            return Err(format!("path must be absolute: {path}"));
+        }
+        if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Err("no .. in a project path".into());
+        }
+        if p.parent().is_none() {
+            return Err("pin a folder, not a drive".into());
+        }
         if p.is_file() {
             return Err(format!("not a directory: {path}"));
         }
         std::fs::create_dir_all(p).map_err(|e| format!("create {path}: {e}"))?;
 
         let conn = self.lock();
+        // One pin per directory, whatever its spelling (plan-16); the
+        // UNIQUE constraint below only catches the exact string.
+        if let Some(dup) = Self::projects_list_locked(&conn)?.iter().find(|q| same_dir(&q.path, &path)) {
+            return Err(format!("already pinned: {}", dup.path));
+        }
         let position: i64 = conn
             .query_row("SELECT COALESCE(MAX(position), 0) + 1 FROM projects", [], |r| r.get(0))
             .map_err(sql_err)?;
@@ -118,6 +143,7 @@ impl Db {
                 id: conn.last_insert_rowid() as u32,
                 name: name.trim().to_string(),
                 path,
+                missing: false,
             }),
             Ok(_) => Err(format!("already pinned: {path}")),
             Err(e) => Err(sql_err(e)),
@@ -267,12 +293,24 @@ impl Db {
             .map(|(id, s, _)| Status::parse(s).map(|st| (id.clone(), st)).map_err(|e| format!("inbox task \"{id}\": {e}")))
             .collect::<Result<_, _>>()?;
         if let Some((i, j)) = tasks::swap_target(&order, id, delta)? {
+            // One transaction (plan-16): a failure between the two updates
+            // would leave two tasks on one position.
+            let tx = conn.unchecked_transaction().map_err(sql_err)?;
             for (from, to) in [(i, j), (j, i)] {
-                conn.execute("UPDATE tasks SET position = ?1 WHERE id = ?2", params![rows[to].2, rows[from].0])
+                tx.execute("UPDATE tasks SET position = ?1 WHERE id = ?2", params![rows[to].2, rows[from].0])
                     .map_err(sql_err)?;
             }
+            tx.commit().map_err(sql_err)?;
         }
         Self::inbox_list_locked(&conn)
+    }
+
+    /// Positions in list order, for the tests: they must stay distinct.
+    #[cfg(test)]
+    pub fn inbox_positions(&self) -> Vec<i64> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT position FROM tasks ORDER BY position").unwrap();
+        stmt.query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
     }
 
     pub fn inbox_remove(&self, id: &str) -> Result<Vec<Task>, String> {
@@ -284,6 +322,16 @@ impl Db {
             return Err(format!("no task \"{id}\""));
         }
         Self::inbox_list_locked(&conn)
+    }
+}
+
+/// Whether two paths name the same directory: by canonical path when both
+/// resolve, else by spelling (case-insensitive on Windows).
+fn same_dir(a: &str, b: &str) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ if cfg!(windows) => a.to_lowercase() == b.to_lowercase(),
+        _ => a == b,
     }
 }
 
@@ -390,6 +438,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&b);
     }
 
+    /// Plan-16: the sidebar shows a root that is gone; the pin stays.
+    #[test]
+    fn list_flags_a_missing_root() {
+        let db = Db::open_in_memory().unwrap();
+        let dir = tmp_dir("missing");
+        let p = db.projects_add("x", &dir).unwrap();
+        assert!(!p.missing);
+        assert!(!db.projects_list().unwrap()[0].missing);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let listed = db.projects_list().unwrap();
+        assert_eq!(listed.len(), 1, "the pin stands");
+        assert!(listed[0].missing);
+    }
+
     #[test]
     fn remove_clears_active_project() {
         let db = Db::open_in_memory().unwrap();
@@ -471,9 +533,11 @@ mod tests {
 
         // Reordering: "renamed" (done) and "third" (todo) are alone in their columns.
         let tasks = db.inbox_add("fourth", "d").unwrap();
+        let before = db.inbox_positions();
         let tasks = db.inbox_shift(&tasks[2].id, -1).unwrap();
         let titles: Vec<_> = tasks.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, ["renamed", "fourth", "third"], "fourth swaps with third (both todo), over renamed (done)");
+        assert_eq!(db.inbox_positions(), before, "a swap permutes positions, never duplicates one");
         let tasks = db.inbox_shift(&tasks[1].id, -1).unwrap();
         let titles: Vec<_> = tasks.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(titles, ["renamed", "fourth", "third"], "edge of the column: no-op");
@@ -482,6 +546,50 @@ mod tests {
         assert_eq!(db.inbox_set_status("zz", Status::Done).unwrap_err(), "no task \"zz\"");
         assert_eq!(db.inbox_remove("zz").unwrap_err(), "no task \"zz\"");
         assert_eq!(db.inbox_add(" ", "d").unwrap_err(), "empty title");
+    }
+
+    /// Plan-16: only absolute paths without `..` reach the filesystem.
+    #[test]
+    fn add_rejects_relative_and_parent_paths() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.projects_add("f", "foo").unwrap_err(), "path must be absolute: foo");
+        let rel = if cfg!(windows) { r"..\x" } else { "../x" };
+        assert_eq!(db.projects_add("f", rel).unwrap_err(), format!("path must be absolute: {rel}"));
+        let abs = tmp_dir("dotdot");
+        let leaf = Path::new(&abs).file_name().unwrap().to_string_lossy().into_owned();
+        let with_dotdot = Path::new(&abs).join("..").join(&leaf).to_string_lossy().into_owned();
+        assert_eq!(db.projects_add("f", &with_dotdot).unwrap_err(), "no .. in a project path");
+        assert!(!Path::new("foo").exists(), "nothing created under the cwd");
+        assert!(db.projects_list().unwrap().is_empty());
+        // An absolute path still pins.
+        db.projects_add("ok", &abs).unwrap();
+        assert_eq!(db.projects_list().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&abs);
+    }
+
+    /// Plan-16: a drive root would watch the whole drive; a second
+    /// spelling of a pinned directory is the same pin.
+    #[test]
+    fn add_rejects_drive_roots_and_duplicates_by_identity() {
+        let db = Db::open_in_memory().unwrap();
+        let root = if cfg!(windows) { r"C:\" } else { "/" };
+        assert_eq!(db.projects_add("r", root).unwrap_err(), "pin a folder, not a drive");
+        if cfg!(windows) {
+            assert_eq!(db.projects_add("r", "c:/").unwrap_err(), "pin a folder, not a drive");
+        }
+
+        let dir = tmp_dir("Dup-Case");
+        let first = db.projects_add("a", &dir).unwrap();
+        // `/` for `\` and swapped case: canonicalise both and they meet.
+        let respelled = if cfg!(windows) { dir.replace('\\', "/").to_uppercase() } else { format!("{dir}/") };
+        let err = db.projects_add("b", &respelled).unwrap_err();
+        assert_eq!(err, format!("already pinned: {}", first.path), "names the existing spelling");
+        // A different directory still pins.
+        let other = tmp_dir("dup-other");
+        db.projects_add("c", &other).unwrap();
+        assert_eq!(db.projects_list().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
     }
 
     #[test]

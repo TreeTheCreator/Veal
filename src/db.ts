@@ -6,6 +6,8 @@ export interface Project {
   id: number;
   name: string;
   path: string;
+  /** The root is not a directory right now (plan-16); the pin stands. */
+  missing: boolean;
 }
 
 export type PathKind = "dir" | "file" | "missing";

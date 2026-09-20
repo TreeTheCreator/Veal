@@ -35,6 +35,25 @@ export function PaneLayout({ emptyHint }: { emptyHint: string }) {
   // Stable render order, independent of where a pane sits in the tree.
   const leaves = useMemo(() => panes(tree).sort((a, b) => a.id - b.id), [tree]);
 
+  // Closing a pane with a *detected* agent asks first (plan-16); the manual
+  // Agent label does not count, matching the sidebar dot. A clean `exit`
+  // from the shell still closes at once: it comes through `closePane`.
+  const [confirm, setConfirm] = useState<{ id: number; agent: string } | null>(null);
+  const requestClose = (id: number) => {
+    const agent = useLayout.getState().agents.get(id);
+    if (agent) setConfirm({ id, agent });
+    else closePane(id);
+  };
+
+  useEffect(() => {
+    if (!confirm) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirm(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [confirm]);
+
   return (
     <div className="layout" ref={hostRef}>
       {leaves.length === 0 && (
@@ -53,13 +72,40 @@ export function PaneLayout({ emptyHint }: { emptyHint: string }) {
             focused={p.id === focused}
             style={toStyle(geo.panes.get(p.id)!)}
             onFocus={() => focus(p.id)}
-            onClose={() => closePane(p.id)}
+            onClose={() => requestClose(p.id)}
             onFlip={() => flipKind(p.id)}
           />
         ))}
       {geo.dividers.map((d) => (
         <Divider key={`${d.path.join(".")}:${d.index}`} divider={d} />
       ))}
+      {confirm && (
+        <div className="scrim open" onPointerDown={(e) => e.target === e.currentTarget && setConfirm(null)}>
+          <div className="modal" role="dialog" aria-modal="true">
+            <h3>Close this pane?</h3>
+            <div className="field">
+              <span>
+                <b>{confirm.agent}</b> is running in it. Closing the pane ends the session.
+              </span>
+            </div>
+            <div className="row">
+              <button type="button" className="btn ghost" onClick={() => setConfirm(null)} autoFocus>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  closePane(confirm.id);
+                  setConfirm(null);
+                }}
+              >
+                Close pane
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

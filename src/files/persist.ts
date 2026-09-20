@@ -68,6 +68,26 @@ export function settledExpanded(p: Pick<ProjectFiles, "root" | "dirs" | "expande
 }
 
 let started = false;
+const timers = new Map<number, ReturnType<typeof setTimeout>>();
+const written = new Map<number, string>();
+
+function save(id: number): Promise<void> {
+  clearTimeout(timers.get(id));
+  timers.delete(id);
+  const cur = useFiles.getState().byProject.get(id);
+  if (!cur) return Promise.resolve();
+  const expanded = settledExpanded(cur);
+  if (expanded === null) return Promise.resolve(); // the next listing re-arms this
+  const value = serializeFiles({ expanded, open: cur.open });
+  if (written.get(id) === value) return Promise.resolve();
+  written.set(id, value);
+  return db.settingsSet(filesKey(id), value).catch((e) => console.warn("files save", e));
+}
+
+/** Writes every pending project now (plan-16); see `flushLayout`. */
+export function flushFiles(): Promise<void> {
+  return Promise.all([...timers.keys()].map(save)).then(() => {});
+}
 
 /**
  * Writes a project's tree state whenever its expanded set, open file or a
@@ -78,26 +98,12 @@ let started = false;
 export function startFilesPersistence(): void {
   if (started) return;
   started = true;
-  const timers = new Map<number, ReturnType<typeof setTimeout>>();
-  const written = new Map<number, string>();
   useFiles.subscribe((s, prev) => {
     for (const [id, p] of s.byProject) {
       const before = prev.byProject.get(id);
       if (before && before.expanded === p.expanded && before.open === p.open && before.dirs === p.dirs) continue;
       clearTimeout(timers.get(id));
-      timers.set(
-        id,
-        setTimeout(() => {
-          const cur = useFiles.getState().byProject.get(id);
-          if (!cur) return;
-          const expanded = settledExpanded(cur);
-          if (expanded === null) return; // the next listing re-arms this
-          const value = serializeFiles({ expanded, open: cur.open });
-          if (written.get(id) === value) return;
-          written.set(id, value);
-          db.settingsSet(filesKey(id), value).catch((e) => console.warn("files save", e));
-        }, SAVE_DEBOUNCE_MS),
-      );
+      timers.set(id, setTimeout(() => void save(id), SAVE_DEBOUNCE_MS));
     }
     for (const id of written.keys()) if (!s.byProject.has(id)) written.delete(id);
   });

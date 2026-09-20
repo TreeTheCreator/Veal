@@ -3,7 +3,7 @@ import { stemLength, validateName } from "./names";
 
 describe("validateName (mirrors fs.rs validate_name)", () => {
   it("accepts ordinary names", () => {
-    for (const ok of ["a.txt", ".gitignore", "émoji 🐟.md", "console.log", "connect.rs", "nulls.md", "x".repeat(255)]) {
+    for (const ok of ["a.txt", ".gitignore", "émoji 🐟.md", "console.log", "connect.rs", "nulls.md", "x".repeat(255), "🐟".repeat(64)]) {
       expect(validateName(ok), ok).toBeNull();
     }
   });
@@ -26,6 +26,7 @@ describe("validateName (mirrors fs.rs validate_name)", () => {
       ["lpt1", "LPT1 is a reserved name on Windows"],
       ["a.", "a name cannot end with a dot"],
       ["x".repeat(256), "name is too long"],
+      ["🐟".repeat(128), "name is too long"],
     ];
     for (const [name, err] of bad) expect(validateName(name), JSON.stringify(name)).toBe(err);
   });

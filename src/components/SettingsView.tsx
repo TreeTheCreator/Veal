@@ -57,7 +57,7 @@ export function SettingsView() {
           <span className="mono">{PANE_CAP}</span>
         </div>
         <div className="srow">
-          <div className="lbl"><b>Agent detection</b><span>Badge and sidebar dot follow the process tree, polled every 1.5 s</span></div>
+          <div className="lbl"><b>Agent detection</b><span>Badge and sidebar dot follow the process tree, polled every 3 s</span></div>
           <span className="mono">{AGENTS.join(" · ")}</span>
         </div>
         <div className="srow">

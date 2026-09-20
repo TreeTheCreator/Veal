@@ -106,6 +106,10 @@ fn read_file(root: &Path) -> Result<TasksFile, String> {
 }
 
 fn parse(bytes: &[u8]) -> Result<TasksFile, String> {
+    // A UTF-8 BOM is what PowerShell 5.1's `Set-Content -Encoding UTF8`
+    // writes and the one byte serde cannot read (plan-16); it is dropped
+    // here and not written back by `render`.
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     // Validate the raw shape first so a bad status names its task rather
     // than surfacing as serde's "unknown variant".
     let raw: Value = serde_json::from_slice(bytes).map_err(|e| format!("{FILE_NAME}: {e}"))?;
@@ -392,6 +396,22 @@ mod tests {
              { \"id\": \"t1\", \"title\": \"x\", \"status\": \"doing\", \"created\": \"2026-09-01\", \"a\": [1,2], \"notes\": \"from the shell\" }\n  ],\n  \
              \"owner\": \"triyan\"\n}\n"
         );
+    }
+
+    /// Plan-16: a BOM-prefixed file lists, and the next write drops the BOM.
+    #[test]
+    fn a_utf8_bom_is_stripped_and_not_written_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join(DIR_NAME)).unwrap();
+        let body = "{ \"version\": 1, \"tasks\": [ { \"id\": \"t1\", \"title\": \"x\", \"status\": \"todo\", \"created\": \"d\" } ] }";
+        fs::write(file_path(tmp.path()), format!("\u{FEFF}{body}")).unwrap();
+        let tasks = list(tmp.path()).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "x");
+        let tasks = add(tmp.path(), "second", "d").unwrap();
+        assert_eq!(tasks.len(), 2);
+        let bytes = fs::read(file_path(tmp.path())).unwrap();
+        assert!(bytes.starts_with(b"{"), "no BOM after a rewrite: {:?}", &bytes[..3]);
     }
 
     #[test]

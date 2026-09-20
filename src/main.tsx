@@ -18,6 +18,11 @@ import { useUi } from "./ui";
 // inspect the app over WebView2's remote-debugging port.
 if (import.meta.env.DEV) Object.assign(window, { veal: { useFiles, useLayout, useProjects, useSettings, useTasks, useUi } });
 
+// WebView2's own context menu has "Refresh", which reloads the page and
+// orphans every shell (plan-16). The sidebar's and tree's menus are React
+// handlers that run before this one.
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <App />

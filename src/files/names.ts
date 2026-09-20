@@ -20,7 +20,8 @@ export function validateName(name: string): string | null {
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f\x7f]/.test(name)) return "no control characters";
   if (name.endsWith(".")) return "a name cannot end with a dot";
-  if (new TextEncoder().encode(name).length > 255) return "name is too long";
+  // NTFS counts UTF-16 units, which is what `.length` is (plan-16).
+  if (name.length > 255) return "name is too long";
   const stem = name.split(".")[0].toLowerCase();
   if (RESERVED.has(stem)) return `${stem.toUpperCase()} is a reserved name on Windows`;
   return null;

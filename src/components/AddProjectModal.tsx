@@ -33,15 +33,18 @@ export function AddProjectModal({ onClose }: Props) {
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Existence check for the hint under the root field.
+  const draft = deriveProject(name, root, home);
+  const target = normalizePath(root) ? draft?.path : undefined;
+
+  // Existence check for the hint under the root field, on the path that
+  // will be pinned: a relative root resolves under home (plan-16).
   useEffect(() => {
-    const r = normalizePath(root);
-    if (!r) {
+    if (!target) {
       setKind(null);
       return;
     }
     let stale = false;
-    db.pathKind(r).then(
+    db.pathKind(target).then(
       (k) => {
         if (!stale) setKind(k);
       },
@@ -52,16 +55,17 @@ export function AddProjectModal({ onClose }: Props) {
     return () => {
       stale = true;
     };
-  }, [root]);
+  }, [target]);
 
-  const draft = deriveProject(name, root, home);
   const placeholder = joinPath(home || "~", name.trim() || "my-project");
-  const hint = !normalizePath(root)
+  const hint = !target
     ? `Leave blank to create it in ${tilde(home) || "~"}`
     : kind === "file"
       ? "That path is a file, not a directory"
       : kind === "missing"
-        ? "Will be created"
+        ? draft?.created
+          ? `Will be created in ${tilde(home) || "~"}`
+          : "Will be created"
         : "";
 
   const browse = async () => {

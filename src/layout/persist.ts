@@ -28,9 +28,10 @@ function parseNode(v: unknown): LayoutNode | null {
   if (!isRecord(v)) return null;
   if (v.type === "pane") {
     const { id, kind, cwd } = v;
-    if (!Number.isInteger(id) || (kind !== "shell" && kind !== "agent") || typeof cwd !== "string" || !cwd) {
-      return null;
-    }
+    // Positive safe integers only (plan-16): `-5` and `1e300` are integers
+    // to `Number.isInteger`, and a corrupted snapshot is dropped, not repaired.
+    if (!Number.isSafeInteger(id) || (id as number) <= 0 || (kind !== "shell" && kind !== "agent")) return null;
+    if (typeof cwd !== "string" || !cwd) return null;
     const pane: PaneNode = { type: "pane", id: id as number, kind, cwd };
     return pane;
   }
@@ -74,6 +75,27 @@ export function parseLayout(json: string | undefined | null): LayoutSnapshot | n
 }
 
 let started = false;
+let timer: ReturnType<typeof setTimeout> | undefined;
+/** The latest change the timer has not written yet. */
+let unsaved: LayoutSnapshot | null = null;
+
+function save(): Promise<void> {
+  clearTimeout(timer);
+  timer = undefined;
+  const s = unsaved;
+  unsaved = null;
+  if (!s) return Promise.resolve();
+  return db.settingsSet(LAYOUT_KEY, serializeLayout(s)).catch((e) => console.warn("layout save", e));
+}
+
+/**
+ * Writes the pending change now, if there is one (plan-16): the close guard
+ * calls this before the window goes, so a pane closed inside the debounce
+ * is not back on the next launch.
+ */
+export function flushLayout(): Promise<void> {
+  return save();
+}
 
 /**
  * Subscribes to the layout store and writes every change through, debounced.
@@ -82,12 +104,10 @@ let started = false;
 export function startLayoutPersistence(): void {
   if (started) return;
   started = true;
-  let timer: ReturnType<typeof setTimeout> | undefined;
   useLayout.subscribe((s, prev) => {
     if (s.tree === prev.tree && s.focused === prev.focused && s.nextId === prev.nextId) return;
+    unsaved = s;
     clearTimeout(timer);
-    timer = setTimeout(() => {
-      db.settingsSet(LAYOUT_KEY, serializeLayout(s)).catch((e) => console.warn("layout save", e));
-    }, SAVE_DEBOUNCE_MS);
+    timer = setTimeout(save, SAVE_DEBOUNCE_MS);
   });
 }

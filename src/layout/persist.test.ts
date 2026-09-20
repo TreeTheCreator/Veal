@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { parseLayout, serializeLayout } from "./persist";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { flushLayout, parseLayout, SAVE_DEBOUNCE_MS, serializeLayout, startLayoutPersistence } from "./persist";
+import { useLayout } from "./store";
 import { insert, type LayoutNode, type PaneNode } from "./tree";
+
+const settingsSet = vi.fn(async (_key: string, _value: string) => {});
+vi.mock("../db", () => ({ db: { settingsSet: (k: string, v: string) => settingsSet(k, v) } }));
 
 const CWD = "C:\\Users\\user\\veal";
 
@@ -33,6 +37,10 @@ describe("parseLayout", () => {
     expect(parseLayout("[]")).toBeNull();
     expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: 1, kind: "robot", cwd: CWD } }))).toBeNull();
     expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: 1, kind: "shell", cwd: "" } }))).toBeNull();
+    // Plan-16: ids are positive safe integers.
+    expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: -5, kind: "shell", cwd: CWD } }))).toBeNull();
+    expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: 0, kind: "shell", cwd: CWD } }))).toBeNull();
+    expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: 1e300, kind: "shell", cwd: CWD } }))).toBeNull();
     expect(
       parseLayout(JSON.stringify({ tree: { type: "split", dir: "row", weights: [1], children: [pane(1), pane(2)] } })),
     ).toBeNull();
@@ -57,5 +65,28 @@ describe("parseLayout", () => {
     const parsed = parseLayout(JSON.stringify({ tree: fourPanes(), focused: 99, nextId: 2 }));
     expect(parsed?.nextId).toBe(5);
     expect(parsed?.focused).toBe(1);
+  });
+});
+
+describe("flushLayout (plan-16)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("writes a pending change once, at once, and the timer does not write again", async () => {
+    vi.useFakeTimers();
+    startLayoutPersistence();
+    useLayout.getState().addPane("shell", CWD);
+    expect(settingsSet).not.toHaveBeenCalled();
+    await flushLayout();
+    expect(settingsSet).toHaveBeenCalledTimes(1);
+    expect(settingsSet.mock.calls[0][0]).toBe("layout");
+    expect(parseLayout(settingsSet.mock.calls[0][1])?.tree?.type).toBe("pane");
+    vi.advanceTimersByTime(SAVE_DEBOUNCE_MS * 2);
+    expect(settingsSet).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a no-op with nothing pending", async () => {
+    settingsSet.mockClear();
+    await flushLayout();
+    expect(settingsSet).not.toHaveBeenCalled();
   });
 });

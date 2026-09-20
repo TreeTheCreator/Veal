@@ -88,6 +88,17 @@ function ensureExitListener() {
   });
 }
 
+/**
+ * Kill every shell a previous page left behind (plan-16). A page reload
+ * skips React cleanup, so a boot that finds panes registered is a page
+ * whose predecessor is gone; their late exits and drains are for nobody.
+ */
+export async function resetSessions(): Promise<void> {
+  await invoke("pty_reset");
+  earlyExits.clear();
+  dataHandlers.clear();
+}
+
 export async function spawnPty(opts: SpawnOptions, onData: OnData): Promise<PtySession> {
   ensureExitListener();
   ensureAgentListener();

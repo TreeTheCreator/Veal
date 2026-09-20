@@ -14,7 +14,7 @@ import { useLayout } from "../layout/store";
 import { projectForCwd, useProjects } from "../projects/store";
 import { shellForSpawn, useSettings } from "../settings/store";
 import { terminalTheme, useEffectiveMode } from "../theme";
-import { isViewShortcut } from "../ui";
+import { terminalKeyAction } from "../ui";
 
 // Fallback when the container has no layout yet at first fit().
 const DEFAULT_COLS = 120;
@@ -39,8 +39,6 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose, on
   const accent = agent ? "agent" : kind;
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
   const [exitCode, setExitCode] = useState<number | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   // Sidebar project name for the header; basename when the pane is elsewhere.
@@ -62,8 +60,25 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose, on
       windowsPty: isWindows ? { backend: "conpty", buildNumber: 26200 } : undefined,
     });
     termRef.current = term;
-    // Let Ctrl+1/2/3 reach the window listener (view switching) instead of the shell.
-    term.attachCustomKeyEventHandler((e) => !isViewShortcut(e));
+    // Let Ctrl+1/2/3 reach the window listener (view switching) instead of
+    // the shell, and Ctrl+C over a selection copy it rather than send ^C
+    // (plan-16). Returning false keeps the key from xterm entirely.
+    term.attachCustomKeyEventHandler((e) => {
+      switch (terminalKeyAction(e, term.hasSelection())) {
+        case "view":
+          return false;
+        case "copy":
+          // xterm asks on keydown, keypress and keyup; copy once.
+          if (e.type === "keydown") {
+            navigator.clipboard.writeText(term.getSelection()).catch((err) => console.warn("clipboard", err));
+            term.clearSelection();
+            e.preventDefault();
+          }
+          return false;
+        default:
+          return true;
+      }
+    });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
@@ -122,6 +137,13 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose, on
 
     // The shell setting is read at spawn time: it applies to new panes only.
     const shell = shellForSpawn(useSettings.getState().shell);
+    // A spawn is the one thing that notices a pinned root going away or
+    // coming back (plan-16); the sidebar shows it.
+    const markRoot = (missing: boolean) => {
+      const { projects, markMissing } = useProjects.getState();
+      const project = projectForCwd(projects, cwd);
+      if (project) markMissing(project.id, missing);
+    };
     // xterm's write callback fires once the bytes are parsed; the next
     // fetch waits for it (plan-15).
     spawnPty({ cwd, cols, rows, shell }, (bytes, done) => term.write(bytes, done))
@@ -131,6 +153,7 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose, on
           return;
         }
         session = s;
+        markRoot(false);
         for (const d of pendingInput.splice(0)) s.write(d).catch((e) => console.warn("pty_write", e));
         // The pane may have been resized while spawn was in flight.
         if (term.cols !== cols || term.rows !== rows) {
@@ -139,14 +162,19 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose, on
         disposables.push(
           s.onExit((code) => {
             // A clean `exit` closes the pane; anything else stays visible.
-            if (code === 0) onCloseRef.current();
+            // Straight to the store: the shell is gone, so the agent close
+            // guard on `onClose` (plan-16) must not ask.
+            if (code === 0) useLayout.getState().closePane(id);
             else setExitCode(code);
           }),
           // Detection is keyed by PTY id in Rust; the layout keys by pane id.
           s.onAgent((agent) => useLayout.getState().setAgent(id, agent)),
         );
       })
-      .catch((e) => setError(String(e)));
+      .catch((e) => {
+        setError(String(e));
+        if (String(e).startsWith("no such directory")) markRoot(true);
+      });
 
     return () => {
       disposed = true;

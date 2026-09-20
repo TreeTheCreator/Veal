@@ -26,7 +26,7 @@ vi.mock("../db", () => ({ db: { settingsSet: (k: string, v: string) => settingsS
 const { useFiles, detectCrlf } = await import("./store");
 const { pathKey } = await import("./tree");
 
-const LOADED = { status: "loaded", text: "hi\n", size: 3, mtime: 1000, bom: false, crlf: false, saving: false, conflict: null, gen: expect.any(Number) };
+const LOADED = { status: "loaded", text: "hi\n", size: 3, mtime: 1000, bom: false, crlf: false, lossy: false, saving: false, conflict: null, gen: expect.any(Number) };
 
 const A = "C:\\Users\\user\\veal";
 const B = "C:\\Users\\user\\hungy";
@@ -42,7 +42,7 @@ beforeEach(() => {
   list.mockReset();
   read.mockReset();
   list.mockImplementation(async (d) => (d.endsWith("src") ? [file("App.tsx")] : [dir("src"), file("x.md")]));
-  read.mockImplementation(async () => ({ text: "hi\n", size: 3, mtime: 1000, bom: false }));
+  read.mockImplementation(async () => ({ text: "hi\n", size: 3, mtime: 1000, bom: false, lossy: false }));
   write.mockReset();
   showToast.mockReset();
 });
@@ -140,7 +140,7 @@ describe("files store", () => {
     s.openFile(1, `${A}\\slow.md`);
     s.openFile(1, `${A}\\x.md`);
     await flush();
-    resolveFirst({ text: "slow", size: 4, mtime: 1, bom: false });
+    resolveFirst({ text: "slow", size: 4, mtime: 1, bom: false, lossy: false });
     await flush();
     const p = useFiles.getState().byProject.get(1)!;
     expect(p.open).toBe(`${A}\\x.md`);
@@ -188,6 +188,20 @@ describe("editing and drafts", () => {
     expect(project().editing.has(key)).toBe(true);
   });
 
+  it("a lossy file never enters edit mode, so it can never be saved (plan-16)", async () => {
+    read.mockImplementation(async () => ({ text: "caf�\n", size: 5, mtime: 1000, bom: false, lossy: true }));
+    const s = useFiles.getState();
+    s.ensure(1, A);
+    s.openFile(1, F);
+    await flush();
+    expect(project().file).toMatchObject({ status: "loaded", lossy: true });
+    s.setEditing(1, F, true);
+    expect(project().editing.has(key)).toBe(false);
+    s.markDirty(1, F);
+    expect(project().drafts.size).toBe(0);
+    expect(s.dirtyFiles()).toEqual([]);
+  });
+
   it("a re-read with the same mtime keeps the draft and text; a newer one flags a conflict", async () => {
     await openAndEdit();
     const gen = loadedFile().gen;
@@ -196,7 +210,7 @@ describe("editing and drafts", () => {
     expect(loadedFile()).toMatchObject({ text: "hi\n", mtime: 1000, conflict: null, gen });
     expect(project().drafts.has(key)).toBe(true);
 
-    read.mockImplementation(async () => ({ text: "changed\n", size: 8, mtime: 2000, bom: false }));
+    read.mockImplementation(async () => ({ text: "changed\n", size: 8, mtime: 2000, bom: false, lossy: false }));
     useFiles.getState().refresh(1);
     await flush();
     expect(loadedFile()).toMatchObject({ text: "hi\n", mtime: 1000, conflict: "changed", gen });
@@ -216,7 +230,7 @@ describe("editing and drafts", () => {
     s.stash(1, F, state);
     s.openFile(1, `${A}\\other.md`);
     await flush();
-    read.mockImplementation(async () => ({ text: "hi\n", size: 3, mtime: 3000, bom: false }));
+    read.mockImplementation(async () => ({ text: "hi\n", size: 3, mtime: 3000, bom: false, lossy: false }));
     s.openFile(1, F);
     await flush();
     expect(project().drafts.get(key)).toEqual({ state, mtime: 1000, path: F });
@@ -224,7 +238,7 @@ describe("editing and drafts", () => {
   });
 
   it("save writes with the loaded mtime, crlf and bom, then drops the draft and edit mode", async () => {
-    read.mockImplementation(async () => ({ text: "a\r\nb", size: 4, mtime: 1000, bom: true }));
+    read.mockImplementation(async () => ({ text: "a\r\nb", size: 4, mtime: 1000, bom: true, lossy: false }));
     await openAndEdit();
     write.mockResolvedValue({ size: 9, mtime: 5000 });
     const gen = loadedFile().gen;
@@ -333,7 +347,7 @@ describe("editing and drafts", () => {
     it("replaces a clean file whose mtime changed, without a loading flip", async () => {
       await openApp();
       const gen = loadedFile().gen;
-      read.mockResolvedValueOnce({ text: "new\n", size: 4, mtime: 2000, bom: false });
+      read.mockResolvedValueOnce({ text: "new\n", size: 4, mtime: 2000, bom: false, lossy: false });
       const { seen, unsub } = statuses();
       useFiles.getState().onChanged({ projectId: 1, paths: [F] });
       await flush();
@@ -346,7 +360,7 @@ describe("editing and drafts", () => {
     it("marks a dirty file as conflicted and keeps its text", async () => {
       await openAndEdit();
       read.mockClear();
-      read.mockResolvedValueOnce({ text: "theirs\n", size: 7, mtime: 2000, bom: false });
+      read.mockResolvedValueOnce({ text: "theirs\n", size: 7, mtime: 2000, bom: false, lossy: false });
       useFiles.getState().onChanged({ projectId: 1, paths: [F] });
       await flush();
       expect(loadedFile()).toMatchObject({ text: "hi\n", mtime: 1000, conflict: "changed" });

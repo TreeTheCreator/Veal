@@ -28,6 +28,8 @@ export type FileState =
       mtime: number;
       bom: boolean;
       crlf: boolean;
+      /** Not UTF-8 on disk (plan-16): the text is a lossy rendering and can never be saved. */
+      lossy: boolean;
       saving: boolean;
       conflict: "changed" | "deleted" | null;
       /** Bumped every time a read replaces the text; a save keeps it, so the editor knows when to rebuild. */
@@ -130,6 +132,7 @@ const loaded = (f: FileText): FileState => ({
   mtime: f.mtime,
   bom: f.bom,
   crlf: detectCrlf(f.text),
+  lossy: f.lossy,
   saving: false,
   conflict: null,
   gen: ++generation,
@@ -206,7 +209,7 @@ export const useFiles = create<FilesState>((set, get) => {
           // Deleted while we were away; keep the draft editable so it can be overwritten back.
           const text = draft.state?.doc.toString() ?? "";
           patch(projectId, () => ({
-            file: { ...loaded({ text, size: 0, mtime: draft.mtime, bom: false }), conflict: "deleted" } as FileState,
+            file: { ...loaded({ text, size: 0, mtime: draft.mtime, bom: false, lossy: false }), conflict: "deleted" } as FileState,
           }));
         } else {
           patch(projectId, () => ({ file: { status: "error", error: String(e) } }));
@@ -295,6 +298,8 @@ export const useFiles = create<FilesState>((set, get) => {
       const key = pathKey(path);
       patch(projectId, (p) => {
         if (p.editing.has(key) === on || (!on && p.drafts.has(key))) return {};
+        // A lossy file is never editable: a save would write U+FFFD over the original bytes.
+        if (on && pathKey(p.open ?? "") === key && p.file?.status === "loaded" && p.file.lossy) return {};
         const editing = new Set(p.editing);
         if (on) editing.add(key);
         else editing.delete(key);

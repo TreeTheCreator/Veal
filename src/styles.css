@@ -174,6 +174,7 @@ svg.i { flex: 0 0 auto; }
 .project .name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .project.active .name { font-weight: 500; }
 .project .path { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.project .path.missing { text-decoration: line-through; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: transparent; }
 .dot.live { background: var(--agent); box-shadow: 0 0 0 3px var(--agent-soft); }
 .project .spawn { opacity: 0; color: var(--text-2); font-size: 17px; line-height: 1; padding: 1px 5px; border-radius: 5px; }

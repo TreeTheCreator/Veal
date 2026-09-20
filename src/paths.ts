@@ -50,21 +50,29 @@ export function joinPath(dir: string, name: string): string {
   return `${normalizePath(dir)}${sep}${name}`;
 }
 
+/** A drive-letter, UNC or POSIX-rooted path; anything else is relative. */
+export function isAbsolutePath(path: string): boolean {
+  return /^[A-Za-z]:/.test(path) || /^[\\/]/.test(path);
+}
+
 export interface ProjectDraft {
   name: string;
   path: string;
-  /** True when the root was left blank, i.e. the directory will be created under `home`. */
+  /** True when the path was resolved under `home` (a blank or relative root). */
   created: boolean;
 }
 
 /**
  * The add-project modal's derivations (from the mockup): blank root → `~\name`,
- * blank name → basename(root), both blank → nothing to submit.
+ * blank name → basename(root), both blank → nothing to submit. A relative
+ * root goes under home too (plan-16): Rust refuses anything relative, so it
+ * must never reach it as typed — the exe's cwd is not a place.
  */
 export function deriveProject(name: string, root: string, home: string): ProjectDraft | null {
   const n = name.trim();
   const r = normalizePath(root);
   if (!n && !r) return null;
   if (!r) return { name: n, path: joinPath(home, n), created: true };
+  if (!isAbsolutePath(r)) return { name: n || basename(r), path: joinPath(home, r), created: true };
   return { name: n || basename(r), path: r, created: false };
 }

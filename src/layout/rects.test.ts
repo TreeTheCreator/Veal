@@ -59,4 +59,9 @@ describe("dragWeight", () => {
     // Row [1,1,2]: dragging divider 1 scales by the total (4), pair is 3.
     expect(dragWeight([1, 1, 2], 1, 250, 1000)).toBeCloseTo(2);
   });
+
+  it("keeps the weight for a non-finite delta (plan-16)", () => {
+    expect(dragWeight([1, 1], 0, NaN, 100)).toBe(1);
+    expect(dragWeight([1, 1], 0, Infinity, 100)).toBe(1);
+  });
 });

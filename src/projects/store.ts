@@ -4,7 +4,7 @@ import { create } from "zustand";
 import { db, type Project } from "../db";
 import { useFiles } from "../files/store";
 import { panes, type LayoutNode } from "../layout/tree";
-import { samePath } from "../paths";
+import { basename, samePath } from "../paths";
 import { useTasks } from "../tasks/store";
 
 interface ProjectsState {
@@ -15,6 +15,8 @@ interface ProjectsState {
   add(name: string, path: string): Promise<Project>;
   remove(id: number): Promise<void>;
   setActive(id: number): void;
+  /** A spawn found the root gone (or back); the sidebar shows it (plan-16). */
+  markMissing(id: number, missing: boolean): void;
 }
 
 export const useProjects = create<ProjectsState>((set, get) => ({
@@ -55,6 +57,12 @@ export const useProjects = create<ProjectsState>((set, get) => ({
     set({ activeId: id });
     db.settingsSet("active_project", String(id)).catch((e) => console.warn("settings_set", e));
   },
+
+  markMissing(id, missing) {
+    const { projects } = get();
+    if (!projects.some((p) => p.id === id && p.missing !== missing)) return;
+    set({ projects: projects.map((p) => (p.id === id ? { ...p, missing } : p)) });
+  },
 }));
 
 export const selectActive = (s: ProjectsState): Project | null =>
@@ -72,6 +80,21 @@ export function projectForCwd(projects: Project[], cwd: string): Project | null 
  * about projects (spec), so there is no projectId on panes. The value is the
  * agent's name, for the dot's title.
  */
+/** A pane with a detected agent, for the close guards' lists (plan-16). */
+export interface RunningAgent {
+  paneId: number;
+  agent: string;
+  /** Sidebar project name, or the cwd's basename when the pane is elsewhere. */
+  where: string;
+}
+
+/** Panes whose shell has a *detected* agent, in tree order; the manual label does not count. */
+export function runningAgents(tree: LayoutNode | null, projects: Project[], agents: Map<number, string>): RunningAgent[] {
+  return panes(tree)
+    .filter((p) => agents.has(p.id))
+    .map((p) => ({ paneId: p.id, agent: agents.get(p.id)!, where: projectForCwd(projects, p.cwd)?.name ?? basename(p.cwd) }));
+}
+
 export function liveProjectIds(
   tree: LayoutNode | null,
   projects: Project[],

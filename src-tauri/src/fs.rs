@@ -35,6 +35,9 @@ pub struct FileText {
     pub mtime: u64,
     /// True when a UTF-8 BOM was stripped from `text`; `write` restores it.
     pub bom: bool,
+    /// True when the bytes were not valid UTF-8 and `text` holds U+FFFD
+    /// replacements (plan-16): shown, never written back.
+    pub lossy: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -99,12 +102,15 @@ pub fn read(path: &Path) -> Result<FileText, String> {
     if bytes[..bytes.len().min(SNIFF_LEN)].contains(&0) {
         return Err("binary".into());
     }
-    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    let (mut text, lossy) = match String::from_utf8(bytes) {
+        Ok(s) => (s, false),
+        Err(e) => (String::from_utf8_lossy(e.as_bytes()).into_owned(), true),
+    };
     let bom = text.starts_with(BOM);
     if bom {
         text.drain(..BOM.len());
     }
-    Ok(FileText { text, size, mtime, bom })
+    Ok(FileText { text, size, mtime, bom, lossy })
 }
 
 /// Hidden / system / archive etc. on Windows (plan-13): the rename below
@@ -215,7 +221,8 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     if name.ends_with('.') {
         return Err("a name cannot end with a dot".into());
     }
-    if name.len() > 255 {
+    // NTFS's limit is 255 UTF-16 units (plan-16), not bytes.
+    if name.encode_utf16().count() > 255 {
         return Err("name is too long".into());
     }
     let stem = name.split('.').next().unwrap_or("").to_lowercase();
@@ -252,6 +259,9 @@ pub fn create(dir: &Path, name: &str, kind: &str) -> Result<PathBuf, String> {
 /// Renames `path` to a sibling called `name`. An existing sibling is
 /// refused — unless it is this very entry under a different case
 /// (decision 7), which a case-insensitive filesystem renames in place.
+/// "This very entry" is checked by canonical path (plan-16): on a
+/// case-sensitive filesystem `A.txt` beside `a.txt` is a distinct file
+/// that `std::fs::rename` would silently overwrite.
 pub fn rename(path: &Path, name: &str) -> Result<PathBuf, String> {
     validate_name(name)?;
     let parent = path.parent().ok_or_else(|| format!("no parent: {}", path.display()))?;
@@ -260,8 +270,15 @@ pub fn rename(path: &Path, name: &str) -> Result<PathBuf, String> {
         .file_name()
         .map(|f| f.to_string_lossy().to_lowercase() == name.to_lowercase())
         .unwrap_or(false);
-    if target.exists() && !same_entry {
-        return Err(format!("already exists: {name}"));
+    if target.exists() {
+        let same_file = same_entry
+            && matches!(
+                (std::fs::canonicalize(path), std::fs::canonicalize(&target)),
+                (Ok(a), Ok(b)) if a == b
+            );
+        if !same_file {
+            return Err(format!("already exists: {name}"));
+        }
     }
     std::fs::rename(path, &target).map_err(|e| format!("rename {}: {e}", path.display()))?;
     Ok(target)
@@ -277,19 +294,41 @@ pub fn delete(path: &Path) -> Result<(), String> {
 }
 
 /// The canonical form of `path` if it lies under a pinned project root.
+/// Follows symlinks and junctions: this is the confinement for reading
+/// *through* an entry (list, read, write, create-in).
 pub fn confine(db: &Db, path: &str) -> Result<PathBuf, String> {
-    let outside = || format!("outside pinned projects: {path}");
     let canon = std::fs::canonicalize(path.trim()).map_err(|e| format!("{path}: {e}"))?;
-    let inside = db.projects_list()?.iter().any(|p| {
+    if under_pinned_root(db, &canon)? {
+        Ok(canon)
+    } else {
+        Err(format!("outside pinned projects: {path}"))
+    }
+}
+
+/// Confinement for acting on a directory *entry* (rename, delete, plan-16):
+/// the parent is canonicalised and must be under a pinned root, but the
+/// last component is kept as written, so a junction or symlink names
+/// itself, never its target. The entry must exist (`symlink_metadata`).
+pub fn confine_entry(db: &Db, path: &str) -> Result<PathBuf, String> {
+    let p = Path::new(path.trim());
+    let name = p.file_name().ok_or_else(|| format!("no file name: {path}"))?;
+    let parent = p.parent().ok_or_else(|| format!("no parent: {path}"))?;
+    let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
+    let parent = std::fs::canonicalize(parent).map_err(|e| format!("{path}: {e}"))?;
+    if !under_pinned_root(db, &parent)? {
+        return Err(format!("outside pinned projects: {path}"));
+    }
+    let entry = parent.join(name);
+    std::fs::symlink_metadata(&entry).map_err(|e| format!("{path}: {e}"))?;
+    Ok(entry)
+}
+
+fn under_pinned_root(db: &Db, canon: &Path) -> Result<bool, String> {
+    Ok(db.projects_list()?.iter().any(|p| {
         std::fs::canonicalize(&p.path)
             .map(|root| canon.starts_with(root))
             .unwrap_or(false)
-    });
-    if inside {
-        Ok(canon)
-    } else {
-        Err(outside())
-    }
+    }))
 }
 
 #[cfg(test)]
@@ -373,6 +412,9 @@ mod tests {
         }
         assert_eq!(validate_name(&"x".repeat(256)), Err("name is too long".into()));
         assert_eq!(validate_name(&"x".repeat(255)), Ok(()));
+        // 64 fish are 128 UTF-16 units (256 bytes) and legal on NTFS; 128 are not.
+        assert_eq!(validate_name(&"🐟".repeat(64)), Ok(()));
+        assert_eq!(validate_name(&"🐟".repeat(128)), Err("name is too long".into()));
     }
 
     #[test]
@@ -417,6 +459,19 @@ mod tests {
         assert!(rename(&tmp.path().join("missing"), "x").is_err());
     }
 
+    /// Plan-16: where the filesystem tells `a.txt` from `A.txt`, a
+    /// case-only rename onto the other one is a clobber, not a recase.
+    #[cfg(unix)]
+    #[test]
+    fn case_only_rename_refuses_a_distinct_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "lower").unwrap();
+        fs::write(tmp.path().join("A.txt"), "upper").unwrap();
+        assert_eq!(rename(&tmp.path().join("a.txt"), "A.txt"), Err("already exists: A.txt".into()));
+        assert_eq!(fs::read_to_string(tmp.path().join("a.txt")).unwrap(), "lower");
+        assert_eq!(fs::read_to_string(tmp.path().join("A.txt")).unwrap(), "upper");
+    }
+
     #[test]
     fn list_missing_dir_is_an_error() {
         let tmp = tempfile::tempdir().unwrap();
@@ -436,7 +491,22 @@ mod tests {
         assert!(f.mtime > 1_600_000_000_000);
 
         fs::write(&p, b"plain").unwrap();
-        assert!(!read(&p).unwrap().bom);
+        let f = read(&p).unwrap();
+        assert!(!f.bom);
+        assert!(!f.lossy);
+    }
+
+    #[test]
+    fn read_flags_a_lossy_decode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("latin1.txt");
+        fs::write(&p, b"caf\xE9\r\n").unwrap();
+        let f = read(&p).unwrap();
+        assert!(f.lossy);
+        assert_eq!(f.text, "caf\u{fffd}\r\n");
+        assert_eq!(f.size, 6, "size is the on-disk byte count");
+        assert!(!f.bom);
+        assert_eq!(fs::read(&p).unwrap(), b"caf\xE9\r\n", "reading never touches the file");
     }
 
     #[test]
@@ -485,6 +555,55 @@ mod tests {
         let big = tmp.path().join("big.txt");
         fs::write(&big, vec![b'x'; READ_CAP as usize + 1]).unwrap();
         assert!(read(&big).unwrap_err().starts_with("too large: "));
+    }
+
+    /// A directory link `link` → `target` (junction on Windows: no privilege needed).
+    fn link_dir(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .expect("mklink");
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).expect("symlink");
+    }
+
+    #[test]
+    fn confine_entry_names_the_link_and_rename_moves_only_the_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let target = root.join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep.txt"), "k").unwrap();
+        let link = root.join("link");
+        link_dir(&link, &target);
+
+        let db = Db::open_in_memory().unwrap();
+        db.projects_add("p", root.to_str().unwrap()).unwrap();
+
+        // `confine` follows the link; `confine_entry` does not.
+        assert_eq!(confine(&db, link.to_str().unwrap()).unwrap(), target.canonicalize().unwrap());
+        let entry = confine_entry(&db, link.to_str().unwrap()).unwrap();
+        assert_eq!(entry.file_name().unwrap(), "link");
+        assert!(fs::symlink_metadata(&entry).unwrap().file_type().is_symlink() || cfg!(windows));
+
+        let moved = rename(&entry, "moved").unwrap();
+        assert!(fs::symlink_metadata(&moved).is_ok(), "link renamed");
+        assert!(fs::symlink_metadata(&link).is_err(), "old link gone");
+        assert!(target.join("keep.txt").is_file(), "target untouched");
+        assert!(moved.join("keep.txt").is_file(), "link still resolves");
+
+        // A missing entry, or one whose parent is outside every root, is refused.
+        assert!(confine_entry(&db, root.join("nope").to_str().unwrap()).is_err());
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("f.txt"), "x").unwrap();
+        let err = confine_entry(&db, outside.path().join("f.txt").to_str().unwrap()).unwrap_err();
+        assert!(err.starts_with("outside pinned projects: "), "{err}");
     }
 
     #[test]

@@ -27,7 +27,9 @@ const PACKAGES: [(&str, &str); 2] = [("claude-code", "claude"), ("gemini-cli", "
 /// Only components after one of these count as a package name; anything
 /// before is the user's own tree (`C:\dev\claude\build.js` is not claude).
 const PACKAGE_ROOTS: [&str; 2] = ["node_modules", "site-packages"];
-pub const TICK: Duration = Duration::from_millis(1500);
+/// 3 s (plan-16): a release-build refresh of the process table measured
+/// p50 16.7 ms / max 25.9 ms idle, so 1.5 s was 1.1 % of a core for nothing.
+pub const TICK: Duration = Duration::from_millis(3000);
 
 /// One process, as the poller sees it.
 #[derive(Debug, Clone)]
@@ -194,7 +196,7 @@ pub fn start(registry: Arc<PtyRegistry>, sink: impl Fn(PaneAgent) + Send + 'stat
                     let table = snapshot(&mut sys);
                     if cfg!(debug_assertions) {
                         let ms = t.elapsed().as_secs_f64() * 1000.0;
-                        if ms > 50.0 {
+                        if ms > 10.0 {
                             eprintln!("[agents] refresh {} procs in {ms:.1} ms", table.len());
                         }
                     }
@@ -300,6 +302,30 @@ mod tests {
         );
         // Pane 8 never had an agent and was never reported.
         assert_eq!(last.get(&8), Some(&None));
+    }
+
+    /// The poller's cost (plan-16, section 7): 40 refreshes at `TICK`, one
+    /// idle minute. Run by hand with `cargo test --release -- --ignored
+    /// --nocapture poller_cost`; the p50 decides whether `TICK` changes.
+    #[test]
+    #[ignore]
+    fn poller_cost() {
+        let mut sys = System::new();
+        let mut ms = Vec::new();
+        for _ in 0..40 {
+            let t = Instant::now();
+            let table = snapshot(&mut sys);
+            ms.push(t.elapsed().as_secs_f64() * 1000.0);
+            std::thread::sleep(TICK);
+            let _ = table.len();
+        }
+        ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        eprintln!(
+            "[poller_cost] p50 {:.2} ms, max {:.2} ms, per tick {:.2}% of a core",
+            ms[ms.len() / 2],
+            ms[ms.len() - 1],
+            ms[ms.len() / 2] / TICK.as_secs_f64() / 10.0
+        );
     }
 
     /// Real pids: spawn a shell, start `ping`, and find it under the shell.

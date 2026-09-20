@@ -78,7 +78,9 @@ export function CodeViewer({ active, projectId, projectName, path, rel, file, ed
       ? { text: "saving…", cls: "" }
       : loaded.conflict
         ? { text: "conflict", cls: " agent" }
-        : dirty
+        : loaded.lossy
+          ? { text: "not UTF-8", cls: " agent" }
+          : dirty
           ? { text: "modified", cls: " accent" }
           : editing
             ? null
@@ -103,7 +105,12 @@ export function CodeViewer({ active, projectId, projectName, path, rel, file, ed
                   Save
                 </button>
               ) : (
-                <button className="btn" onClick={() => setEditing(projectId, path, !editing)}>
+                <button
+                  className="btn"
+                  onClick={() => setEditing(projectId, path, !editing)}
+                  disabled={loaded.lossy}
+                  title={loaded.lossy ? "Not UTF-8: shown lossily, cannot be saved from Veal" : undefined}
+                >
                   {editing ? "Done" : "Edit"}
                 </button>
               )}

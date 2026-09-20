@@ -19,6 +19,8 @@ interface Props {
   onAddProject(): void;
 }
 
+const MISSING_TITLE = "Folder not found — restore it or unpin";
+
 interface Menu {
   x: number;
   y: number;
@@ -115,36 +117,39 @@ export function Sidebar({ onAddProject }: Props) {
       <ul className="projects">
         {projects.map((p) => {
           const agent = live.get(p.id);
+          // A root that is gone (plan-16) cannot spawn a shell.
+          const noSpawn = atCap || p.missing;
+          const spawnTitle = p.missing ? MISSING_TITLE : atCap ? `Soft cap of ${PANE_CAP} reached` : "New terminal here";
           return (
             <li key={p.id} className="project-row">
               <button
                 className={`project${p.id === activeId ? " active" : ""}`}
                 onClick={() => setActive(p.id)}
                 onContextMenu={(e) => onContextMenu(e, p)}
-                title={p.path}
+                title={p.missing ? MISSING_TITLE : p.path}
               >
                 <Icon name="folder" />
                 <span style={{ minWidth: 0 }}>
                   <div className="name">{p.name}</div>
-                  <div className="path">{tilde(p.path)}</div>
+                  <div className={`path${p.missing ? " missing" : ""}`}>{tilde(p.path)}</div>
                 </span>
                 <span className={`dot${agent ? " live" : ""}`} title={agent ? `${agent} running` : undefined} />
                 <span
                   className="spawn"
                   role="button"
                   tabIndex={0}
-                  title={atCap ? `Soft cap of ${PANE_CAP} reached` : "New terminal here"}
-                  aria-disabled={atCap}
+                  title={spawnTitle}
+                  aria-disabled={noSpawn}
                   data-popover-anchor={`spawn-${p.id}`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (!atCap) toggleSpawn(p.id);
+                    if (!noSpawn) toggleSpawn(p.id);
                   }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
                       e.stopPropagation();
-                      if (!atCap) toggleSpawn(p.id);
+                      if (!noSpawn) toggleSpawn(p.id);
                     }
                   }}
                 >

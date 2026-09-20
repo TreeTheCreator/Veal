@@ -17,6 +17,8 @@ export interface FileText {
   mtime: number;
   /** A UTF-8 BOM was stripped; the save restores it. */
   bom: boolean;
+  /** The bytes were not UTF-8 and `text` holds U+FFFD replacements (plan-16): read-only. */
+  lossy: boolean;
 }
 
 export interface Written {

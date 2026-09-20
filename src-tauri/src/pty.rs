@@ -147,14 +147,20 @@ fn size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
+/// Whether a bare program name resolves on PATH. On Windows `pwsh` finds
+/// `pwsh.exe`, as CreateProcess would.
+fn on_path(program: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else { return false };
+    std::env::split_paths(&path).any(|d| {
+        d.join(program).is_file() || (cfg!(windows) && d.join(format!("{program}.exe")).is_file())
+    })
+}
+
 /// Platform default shell. Windows: `pwsh.exe` if it is on PATH, else
 /// `powershell.exe`. Elsewhere: `$SHELL`, else `/bin/sh`.
 pub fn default_shell() -> String {
     if cfg!(windows) {
-        let on_path = std::env::var_os("PATH")
-            .map(|p| std::env::split_paths(&p).any(|d| d.join("pwsh.exe").is_file()))
-            .unwrap_or(false);
-        if on_path {
+        if on_path("pwsh.exe") {
             "pwsh.exe".into()
         } else {
             "powershell.exe".into()
@@ -162,6 +168,19 @@ pub fn default_shell() -> String {
     } else {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
     }
+}
+
+/// A shell that cannot be found is named plainly (plan-16), not as the
+/// `CreateProcessW` debug string portable-pty would produce.
+fn check_shell(shell: &str) -> Result<(), String> {
+    let is_path = shell.contains(['\\', '/']);
+    if is_path && !std::path::Path::new(shell).is_file() {
+        return Err(format!("{shell}: not found"));
+    }
+    if !is_path && !on_path(shell) {
+        return Err(format!("{shell} is not on PATH"));
+    }
+    Ok(())
 }
 
 impl PtyRegistry {
@@ -182,11 +201,12 @@ impl PtyRegistry {
         if !std::path::Path::new(&opts.cwd).is_dir() {
             return Err(format!("no such directory: {}", opts.cwd));
         }
+        let shell = opts.shell.unwrap_or_else(default_shell);
+        check_shell(&shell)?;
         let pair = native_pty_system()
             .openpty(size(opts.cols, opts.rows))
             .map_err(|e| e.to_string())?;
 
-        let shell = opts.shell.unwrap_or_else(default_shell);
         let mut cmd = CommandBuilder::new(&shell);
         cmd.cwd(&opts.cwd);
         // Ignored by ConPTY; required on unix so the shell knows it has a real terminal.
@@ -218,6 +238,8 @@ impl PtyRegistry {
             },
         );
 
+        // Either thread failing to start (plan-16) must not leave a pane
+        // registered with a live child and nobody to reap it.
         let reader_shared = Arc::clone(&shared);
         thread::Builder::new()
             .name(format!("pty-{id}-read"))
@@ -248,7 +270,10 @@ impl PtyRegistry {
                 }
                 reader_shared.set_eof();
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                self.undo_spawn(id);
+                format!("spawn reader thread: {e}")
+            })?;
 
         let registry = Arc::clone(self);
         thread::Builder::new()
@@ -264,9 +289,24 @@ impl PtyRegistry {
                 drop(handle);
                 on_exit(id, code);
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                self.undo_spawn(id);
+                format!("spawn waiter thread: {e}")
+            })?;
 
         Ok(id)
+    }
+
+    /// Takes a half-spawned pane back: kill the child, forget the handle
+    /// and the outbox. A reader that did start ends at EOF once the master
+    /// drops with the handle.
+    fn undo_spawn(&self, id: u32) {
+        if let Some(s) = self.outboxes.lock().unwrap().remove(&id) {
+            s.close();
+        }
+        if let Some(mut h) = self.panes.lock().unwrap().remove(&id) {
+            let _ = h.killer.kill();
+        }
     }
 
     /// Everything read since the last take. Empty for an unknown id: the
@@ -323,8 +363,14 @@ impl PtyRegistry {
     }
 
     /// Kill every registered child. Used on window close so no shells or
-    /// agents outlive the app.
+    /// agents outlive the app, and at boot (plan-16) so a reloaded page does
+    /// not leave its predecessor's shells running. Nothing will fetch the
+    /// outboxes, so they go too.
     pub fn kill_all(&self) {
+        let outboxes: Vec<_> = self.outboxes.lock().unwrap().drain().map(|(_, s)| s).collect();
+        for s in outboxes {
+            s.close();
+        }
         let mut panes = self.panes.lock().unwrap();
         for h in panes.values_mut() {
             h.shared.close();
@@ -559,6 +605,25 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, format!("no such directory: {cwd}"));
         assert!(!registry.contains(1), "nothing should be registered");
+    }
+
+    /// Plan-16: the footer reads `failed to start shell: X is not on PATH`.
+    #[test]
+    fn missing_shell_is_named_plainly() {
+        let registry = Arc::new(PtyRegistry::default());
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let spawn = |shell: &str| {
+            registry.spawn(
+                SpawnOptions { cwd: cwd.clone(), cols: 80, rows: 24, shell: Some(shell.into()) },
+                |_| {},
+                |_, _| {},
+            )
+        };
+        assert_eq!(spawn("zz-no-such-shell.exe"), Err("zz-no-such-shell.exe is not on PATH".into()));
+        let as_path = std::env::temp_dir().join("zz-no-such-shell.exe").to_string_lossy().into_owned();
+        assert_eq!(spawn(&as_path), Err(format!("{as_path}: not found")));
+        assert!(!registry.contains(1), "nothing should be registered");
+        assert!(registry.pids().is_empty());
     }
 
     #[test]

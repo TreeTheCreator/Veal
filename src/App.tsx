@@ -22,6 +22,7 @@ import { selectPaneCount, useLayout } from "./layout/store";
 import { PANE_CAP } from "./layout/tree";
 import { setHome, tilde } from "./paths";
 import { selectActive, useProjects } from "./projects/store";
+import { resetSessions } from "./pty";
 import { useSettings } from "./settings/store";
 import { isView, TAB_VIEWS, useUi, VIEW_KEY, viewForShortcut, type View } from "./ui";
 import { startWatching } from "./watch";
@@ -37,6 +38,8 @@ async function boot() {
     useProjects.getState().load(),
     // Paths under the profile display as `~`; shown whole until this resolves.
     homeDir().then(setHome, (e) => console.warn("homeDir", e)),
+    // Shells the page before this one (F5, "Refresh") left running.
+    resetSessions().catch((e) => console.warn("pty_reset", e)),
   ]);
   if (isView(settings[VIEW_KEY])) useUi.setState({ view: settings[VIEW_KEY] });
   const restoreOn = useSettings.getState().restoreLayout;
