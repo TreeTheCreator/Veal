@@ -52,11 +52,11 @@ svg.i { flex: 0 0 auto; }
 
 /* ---------- App frame ---------- */
 .app { display: grid; grid-template-rows: 44px 1fr; grid-template-columns: 236px 1fr; height: 100%; }
-.topbar { grid-column: 1 / -1; display: grid; grid-template-columns: 236px 1fr 236px; align-items: center; background: var(--panel); border-bottom: 1px solid var(--line); padding: 0 14px 0 16px; }
+.topbar { grid-column: 1 / -1; display: grid; grid-template-columns: 236px 1fr auto; column-gap: 14px; align-items: center; background: var(--panel); border-bottom: 1px solid var(--line); padding: 0 14px 0 16px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; }
 .brand svg { color: var(--text); }
 .brand small { color: var(--muted); font-weight: 400; font-size: 12px; }
-.tabs { justify-self: center; display: flex; background: var(--bg-sunk); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
+.tabs { justify-self: end; display: flex; background: var(--bg-sunk); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
 .tab { padding: 5px 16px; border-radius: 6px; color: var(--text-2); display: flex; align-items: center; gap: 8px; }
 .tab kbd { font-family: var(--mono); font-size: 10px; color: var(--muted); }
 .tab.active { background: var(--panel-2); color: var(--text); font-weight: 500; }

@@ -22,7 +22,10 @@ beside the dev window focused the dev window); the pwsh setting gave
 UTF8` tasks.json (PS 5.1, `EF BB BF`) listed and was rewritten without
 the BOM; a pinned root renamed away struck the row through and disabled
 `+` after the spawn failed, and a successful spawn after renaming it back
-cleared it (`projects_list` said `missing: false` too).
+cleared it (`projects_list` said `missing: false` too). Section 5's second
+timing, run afterwards: a 3000-file `fs_delete` to the Recycle Bin took
+2588 ms, and 93 `path_kind` calls made while it ran answered in median
+6.8 ms, max 27.5 ms (idle 8.8 ms) — under the 50 ms bound (was 1743 ms).
 
 Results for 1–5: `pnpm test` 160, `cargo test` 53, `tsc` clean. Dev
 window over CDP: a junction's Delete removed the link and left the

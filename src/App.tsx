@@ -101,6 +101,7 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand"><Icon name="term" size={20} />veal <small>0.1</small></div>
+        <div className="topbar-right"><span className="mono">{count}/{PANE_CAP} panes</span></div>
         <div className="tabs" role="tablist">
           {TAB_VIEWS.map((v, i) => (
             <button
@@ -114,7 +115,6 @@ export default function App() {
             </button>
           ))}
         </div>
-        <div className="topbar-right"><span className="mono">{count}/{PANE_CAP} panes</span></div>
       </header>
 
       <Sidebar onAddProject={() => setAdding(true)} />
