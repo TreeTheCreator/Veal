@@ -17,3 +17,31 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
     </svg>
   );
 }
+
+// Brand mark: a calf's head with a V blaze down the forehead. Filled, not stroked, so it
+// lives outside PATHS; the eyes, muzzle, and blaze are cut out with a mask so it stays
+// transparent on any ground.
+export function Logo({ size = 20 }: { size?: number }) {
+  return (
+    <svg className="i" width={size} height={size} viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
+      <defs>
+        <mask id="veal-logo-mask">
+          <rect width="32" height="32" fill="#fff" />
+          <rect x="11.5" y="20" width="9" height="6" rx="3" fill="#000" />
+          <circle cx="11" cy="15" r="1.2" fill="#000" />
+          <circle cx="21" cy="15" r="1.2" fill="#000" />
+          <polygon points="12.3,0 16,17 19.7,0" fill="#000" />
+        </mask>
+      </defs>
+      <path d="M9 10 C5.5 7.5 1.5 8 2 10.5 C2.5 13.5 6 14.5 9 14 Z" />
+      <path d="M23 10 C26.5 7.5 30.5 8 30 10.5 C29.5 13.5 26 14.5 23 14 Z" />
+      <g mask="url(#veal-logo-mask)">
+        <path d="M11 6 C13 4.5 19 4.5 21 6 C24.5 8.5 25 14 24 19 C23 25 20 29 16 29 C12 29 9 25 8 19 C7 14 7.5 8.5 11 6 Z" />
+        <circle cx="11" cy="5.8" r="1.5" />
+        <circle cx="21" cy="5.8" r="1.5" />
+      </g>
+      <circle cx="14" cy="23" r="1.1" />
+      <circle cx="18" cy="23" r="1.1" />
+    </svg>
+  );
+}

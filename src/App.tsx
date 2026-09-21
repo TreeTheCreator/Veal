@@ -5,7 +5,7 @@
 // so the terminal container keeps its size and no PTY is ever unmounted.
 import { useCallback, useEffect, useState } from "react";
 import { homeDir } from "@tauri-apps/api/path";
-import { Icon } from "./Icon";
+import { Logo } from "./Icon";
 import { AddProjectModal } from "./components/AddProjectModal";
 import { CloseGuard } from "./components/CloseGuard";
 import { FilesView } from "./components/FilesView";
@@ -100,7 +100,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand"><Icon name="term" size={20} />veal <small>0.1</small></div>
+        <div className="brand"><Logo size={20} />veal <small>0.1</small></div>
         <div className="topbar-right"><span className="mono">{count}/{PANE_CAP} panes</span></div>
         <div className="tabs" role="tablist">
           {TAB_VIEWS.map((v, i) => (
