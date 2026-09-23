@@ -20,7 +20,7 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
 
 // Brand mark: a calf's head with a V blaze down the forehead. Filled, not stroked, so it
 // lives outside PATHS; the eyes, muzzle, and blaze are cut out with a mask so it stays
-// transparent on any ground.
+// transparent on any ground. The eyes are the terminal prompt: `>` left, `-` right.
 export function Logo({ size = 20 }: { size?: number }) {
   return (
     <svg className="i" width={size} height={size} viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
@@ -28,8 +28,8 @@ export function Logo({ size = 20 }: { size?: number }) {
         <mask id="veal-logo-mask">
           <rect width="32" height="32" fill="#fff" />
           <rect x="11.5" y="20" width="9" height="6" rx="3" fill="#000" />
-          <circle cx="11" cy="15" r="1.2" fill="#000" />
-          <circle cx="21" cy="15" r="1.2" fill="#000" />
+          <path d="M9.75 13.25 L12.35 15 L9.75 16.75" fill="none" stroke="#000" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+          <rect x="19.3" y="14.35" width="3.4" height="1.3" rx="0.65" fill="#000" />
           <polygon points="12.3,0 16,17 19.7,0" fill="#000" />
         </mask>
       </defs>
