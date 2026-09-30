@@ -28,10 +28,9 @@ A left sidebar holds pinned projects at all times, regardless of which view is a
 - No hard pane-count minimum; a reasonable soft cap (e.g. 4-6) to keep panes usable, but the layout logic itself shouldn't assume a fixed grid
 - Every pane is backed by a real PTY process plus a remembered `cwd`
 - **Multi-project concurrency**: panes are not scoped to "one active project" — different panes can be running in different project directories at the same time. The multiplexer doesn't need special awareness of "projects" beyond each pane's own `cwd`; it just needs to spawn any new pane inside the currently-selected project's root when the user clicks "new pane" from the sidebar.
-- **Pane types — agent vs. shell**:
-  - Agent panes get a **red** accent (left border stripe + a small "agent" badge in the pane header)
-  - Shell panes get a **blue** accent (left border stripe + a small "shell" badge in the pane header)
-  - Pane type can be set at creation (or inferred from the launched command, e.g. detecting `claude` / other agent CLIs) — worth deciding whether this is user-toggled or auto-detected
+- **Pane types — agent vs. shell**, by detection only (plan-17):
+  - A pane is a shell with a **blue** accent (left border stripe + a small "shell" badge in the pane header)
+  - While a known agent CLI (e.g. `claude`) runs under its shell, the pane turns **red** and the badge names the agent
 - New terminal button opens a pane already `cd`'d into the active project's directory
 - Each pane header shows: type badge, project name (in monospace), close button
 

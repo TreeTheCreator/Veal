@@ -27,12 +27,14 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function parseNode(v: unknown): LayoutNode | null {
   if (!isRecord(v)) return null;
   if (v.type === "pane") {
-    const { id, kind, cwd } = v;
+    // A legacy `kind` (the manual Shell / Agent label, dropped in plan-17) is
+    // ignored, so the next save writes panes without it.
+    const { id, cwd } = v;
     // Positive safe integers only (plan-16): `-5` and `1e300` are integers
     // to `Number.isInteger`, and a corrupted snapshot is dropped, not repaired.
-    if (!Number.isSafeInteger(id) || (id as number) <= 0 || (kind !== "shell" && kind !== "agent")) return null;
+    if (!Number.isSafeInteger(id) || (id as number) <= 0) return null;
     if (typeof cwd !== "string" || !cwd) return null;
-    const pane: PaneNode = { type: "pane", id: id as number, kind, cwd };
+    const pane: PaneNode = { type: "pane", id: id as number, cwd };
     return pane;
   }
   if (v.type === "split") {

@@ -11,7 +11,7 @@ beforeEach(() => {
 describe("layout store agents (plan-08)", () => {
   it("setAgent adds, replaces and clears without touching the tree", () => {
     const s = useLayout.getState();
-    const id = s.addPane("shell", A)!;
+    const id = s.addPane(A)!;
     const tree = useLayout.getState().tree;
     s.setAgent(id, "claude");
     expect(useLayout.getState().agents.get(id)).toBe("claude");
@@ -24,7 +24,7 @@ describe("layout store agents (plan-08)", () => {
 
   it("an unchanged answer is a no-op (same map identity)", () => {
     const s = useLayout.getState();
-    const id = s.addPane("shell", A)!;
+    const id = s.addPane(A)!;
     s.setAgent(id, "claude");
     const map = useLayout.getState().agents;
     s.setAgent(id, "claude");
@@ -35,8 +35,8 @@ describe("layout store agents (plan-08)", () => {
 
   it("closePane drops the pane's entry", () => {
     const s = useLayout.getState();
-    const a = s.addPane("shell", A)!;
-    const b = s.addPane("shell", A)!;
+    const a = s.addPane(A)!;
+    const b = s.addPane(A)!;
     s.setAgent(a, "claude");
     s.setAgent(b, "aider");
     s.closePane(a);
@@ -45,7 +45,7 @@ describe("layout store agents (plan-08)", () => {
 
   it("the snapshot never carries agents", () => {
     const s = useLayout.getState();
-    const id = s.addPane("shell", A)!;
+    const id = s.addPane(A)!;
     s.setAgent(id, "claude");
     const json = serializeLayout(useLayout.getState());
     expect(json).not.toContain("agents");

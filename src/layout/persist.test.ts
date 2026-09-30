@@ -8,11 +8,11 @@ vi.mock("../db", () => ({ db: { settingsSet: (k: string, v: string) => settingsS
 
 const CWD = "C:\\Users\\user\\veal";
 
-const pane = (id: number, kind: "shell" | "agent" = "shell"): PaneNode => ({ type: "pane", id, kind, cwd: CWD });
+const pane = (id: number): PaneNode => ({ type: "pane", id, cwd: CWD });
 
 function fourPanes(): LayoutNode {
   let t: LayoutNode | null = null;
-  for (let i = 1; i <= 4; i++) t = insert(t, pane(i, i % 2 ? "shell" : "agent"));
+  for (let i = 1; i <= 4; i++) t = insert(t, pane(i));
   return t!;
 }
 
@@ -35,18 +35,36 @@ describe("parseLayout", () => {
     expect(parseLayout("")).toBeNull();
     expect(parseLayout("{not json")).toBeNull();
     expect(parseLayout("[]")).toBeNull();
-    expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: 1, kind: "robot", cwd: CWD } }))).toBeNull();
-    expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: 1, kind: "shell", cwd: "" } }))).toBeNull();
+    expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: 1, cwd: "" } }))).toBeNull();
     // Plan-16: ids are positive safe integers.
-    expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: -5, kind: "shell", cwd: CWD } }))).toBeNull();
-    expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: 0, kind: "shell", cwd: CWD } }))).toBeNull();
-    expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: 1e300, kind: "shell", cwd: CWD } }))).toBeNull();
+    expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: -5, cwd: CWD } }))).toBeNull();
+    expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: 0, cwd: CWD } }))).toBeNull();
+    expect(parseLayout(JSON.stringify({ tree: { type: "pane", id: 1e300, cwd: CWD } }))).toBeNull();
     expect(
       parseLayout(JSON.stringify({ tree: { type: "split", dir: "row", weights: [1], children: [pane(1), pane(2)] } })),
     ).toBeNull();
     expect(
       parseLayout(JSON.stringify({ tree: { type: "split", dir: "row", weights: [1, 0], children: [pane(1), pane(2)] } })),
     ).toBeNull();
+  });
+
+  it("drops a legacy kind (plan-17)", () => {
+    const legacy = {
+      tree: {
+        type: "split",
+        dir: "row",
+        weights: [1, 1],
+        children: [
+          { type: "pane", id: 1, kind: "agent", cwd: CWD },
+          { type: "pane", id: 2, kind: "robot", cwd: CWD },
+        ],
+      },
+      focused: 1,
+      nextId: 3,
+    };
+    const snap = parseLayout(JSON.stringify(legacy));
+    expect(snap?.tree).toEqual({ type: "split", dir: "row", weights: [1, 1], children: [pane(1), pane(2)] });
+    expect(serializeLayout(snap!)).not.toContain("kind");
   });
 
   it("rejects a tree over the cap or with duplicate ids", () => {
@@ -74,7 +92,7 @@ describe("flushLayout (plan-16)", () => {
   it("writes a pending change once, at once, and the timer does not write again", async () => {
     vi.useFakeTimers();
     startLayoutPersistence();
-    useLayout.getState().addPane("shell", CWD);
+    useLayout.getState().addPane(CWD);
     expect(settingsSet).not.toHaveBeenCalled();
     await flushLayout();
     expect(settingsSet).toHaveBeenCalledTimes(1);

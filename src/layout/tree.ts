@@ -2,13 +2,11 @@
 // with flex weights, a pane is a leaf. Every op is pure and returns a new
 // tree; untouched subtrees are shared, so React can diff by identity.
 
-export type PaneKind = "shell" | "agent";
 export type Dir = "row" | "col";
 
 export interface PaneNode {
   type: "pane";
   id: number;
-  kind: PaneKind;
   cwd: string;
 }
 
@@ -89,18 +87,6 @@ export function remove(root: LayoutNode | null, id: number): LayoutNode | null {
   if (children.length === 0) return null;
   if (children.length === 1) return children[0];
   return { ...root, children, weights };
-}
-
-export function setKind(root: LayoutNode | null, id: number, kind: PaneKind): LayoutNode | null {
-  if (!root) return null;
-  if (root.type === "pane") return root.id === id && root.kind !== kind ? { ...root, kind } : root;
-  let changed = false;
-  const children = root.children.map((c) => {
-    const r = setKind(c, id, kind) as LayoutNode;
-    if (r !== c) changed = true;
-    return r;
-  });
-  return changed ? { ...root, children } : root;
 }
 
 export function splitAt(root: LayoutNode | null, path: Path): SplitNode | null {

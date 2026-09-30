@@ -1,5 +1,5 @@
 // One xterm.js terminal bound to one PTY, with the pane chrome from the
-// mockup: kind badge, project name, cwd, close. Positioned absolutely by
+// mockup: status badge, project name, cwd, close. Positioned absolutely by
 // PaneLayout so it never remounts when the split tree changes shape.
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Terminal } from "@xterm/xterm";
@@ -30,13 +30,13 @@ interface Props {
   style: CSSProperties;
   onFocus(): void;
   onClose(): void;
-  onFlip(): void;
 }
 
-export function TerminalPane({ pane, agent, focused, style, onFocus, onClose, onFlip }: Props) {
-  const { id, kind, cwd } = pane;
-  // A detected agent is red whatever the label says; the badge names it.
-  const accent = agent ? "agent" : kind;
+export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: Props) {
+  const { id, cwd } = pane;
+  // Colour comes from detection alone (plan-17): red and named while an
+  // agent runs, blue `shell` otherwise.
+  const accent = agent ? "agent" : "shell";
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const [exitCode, setExitCode] = useState<number | null | undefined>(undefined);
@@ -206,16 +206,9 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose, on
       onPointerDown={onFocus}
     >
       <div className="pane-head">
-        <button
-          className={`badge flip ${accent}`}
-          title={agent ? `${agent} running · click to flip the label` : "Flip pane type"}
-          onClick={(e) => {
-            e.stopPropagation();
-            onFlip();
-          }}
-        >
-          {agent ?? kind}
-        </button>
+        <span className={`badge ${accent}`} title={agent ? `${agent} running` : undefined}>
+          {agent ?? "shell"}
+        </span>
         <span className="pname">{projectName}</span>
         <span className="cwd" title={cwd}>{tilde(cwd)}</span>
         <button

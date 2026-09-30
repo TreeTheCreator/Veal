@@ -2,7 +2,6 @@
 // The pane layout lives in the same table but is owned by layout/persist.ts.
 import { create } from "zustand";
 import { db } from "../db";
-import type { PaneKind } from "../layout/tree";
 
 export type ShellChoice = "auto" | "pwsh" | "powershell" | "cmd" | "wsl";
 /** Plan-11: `system` follows the OS; the others pin `data-theme` on <html>. */
@@ -18,18 +17,15 @@ export const SHELL_CHOICES: Array<{ value: ShellChoice; label: string }> = [
 
 interface SettingsState {
   theme: Theme;
-  defaultKind: PaneKind;
   shell: ShellChoice;
   restoreLayout: boolean;
   /** Loads every key; returns the raw map so the caller can read `layout` too. */
   load(): Promise<Record<string, string>>;
   setTheme(theme: Theme): void;
-  setDefaultKind(kind: PaneKind): void;
   setShell(shell: ShellChoice): void;
   setRestoreLayout(on: boolean): void;
 }
 
-const isKind = (v: string | undefined): v is PaneKind => v === "shell" || v === "agent";
 export const isTheme = (v: string | undefined): v is Theme => v === "system" || v === "dark" || v === "light";
 
 /**
@@ -51,7 +47,6 @@ function persist(key: string, value: string) {
 
 export const useSettings = create<SettingsState>((set) => ({
   theme: "system",
-  defaultKind: "shell",
   shell: "auto",
   restoreLayout: true,
 
@@ -60,7 +55,6 @@ export const useSettings = create<SettingsState>((set) => ({
     applyTheme(isTheme(all.theme) ? all.theme : "system");
     set({
       theme: isTheme(all.theme) ? all.theme : "system",
-      defaultKind: isKind(all.default_kind) ? all.default_kind : "shell",
       shell: isShell(all.shell) ? all.shell : "auto",
       restoreLayout: all.restore_layout !== "0",
     });
@@ -71,10 +65,6 @@ export const useSettings = create<SettingsState>((set) => ({
     applyTheme(theme);
     set({ theme });
     persist("theme", theme);
-  },
-  setDefaultKind(defaultKind) {
-    set({ defaultKind });
-    persist("default_kind", defaultKind);
   },
   setShell(shell) {
     set({ shell });

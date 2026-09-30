@@ -8,24 +8,24 @@ const projects: Project[] = [
   { id: 2, name: "hungy", path: "C:\\Users\\user\\Hungy games", missing: false },
 ];
 
-const pane = (id: number, kind: "shell" | "agent", cwd: string): PaneNode => ({ type: "pane", id, kind, cwd });
+const pane = (id: number, cwd: string): PaneNode => ({ type: "pane", id, cwd });
 
 describe("liveProjectIds", () => {
-  it("lights a project whose root pane has a detected agent, whatever the label", () => {
+  it("lights a project whose root pane has a detected agent", () => {
     let tree: LayoutNode | null = null;
-    tree = insert(tree, pane(1, "shell", "C:\\Users\\user\\veal"));
-    tree = insert(tree, pane(2, "agent", "c:\\users\\user\\hungy games\\"));
+    tree = insert(tree, pane(1, "C:\\Users\\user\\veal"));
+    tree = insert(tree, pane(2, "c:\\users\\user\\hungy games\\"));
     const agents = new Map([[1, "claude"]]);
     expect([...liveProjectIds(tree, projects, agents)]).toEqual([[1, "claude"]]);
   });
 
-  it("does not light a manual agent pane with nothing running", () => {
-    const tree = insert(null, pane(2, "agent", "C:\\Users\\user\\Hungy games"));
+  it("does not light a pane with nothing running", () => {
+    const tree = insert(null, pane(2, "C:\\Users\\user\\Hungy games"));
     expect(liveProjectIds(tree, projects, new Map()).size).toBe(0);
   });
 
   it("ignores an agent in a pane that is not at the project root", () => {
-    const tree = insert(null, pane(1, "shell", "C:\\Users\\user\\veal\\src"));
+    const tree = insert(null, pane(1, "C:\\Users\\user\\veal\\src"));
     expect(liveProjectIds(tree, projects, new Map([[1, "claude"]])).size).toBe(0);
   });
 
@@ -44,9 +44,9 @@ describe("projectForCwd", () => {
 describe("runningAgents (plan-16)", () => {
   it("lists only detected agents, named by project or by cwd basename", () => {
     let tree: LayoutNode | null = null;
-    tree = insert(tree, pane(1, "agent", "C:\\Users\\user\\veal"));
-    tree = insert(tree, pane(2, "shell", "C:\\Users\\user\\elsewhere\\tool"));
-    tree = insert(tree, pane(3, "agent", "C:\\Users\\user\\Hungy games"));
+    tree = insert(tree, pane(1, "C:\\Users\\user\\veal"));
+    tree = insert(tree, pane(2, "C:\\Users\\user\\elsewhere\\tool"));
+    tree = insert(tree, pane(3, "C:\\Users\\user\\Hungy games"));
     const agents = new Map([
       [1, "claude"],
       [2, "codex"],

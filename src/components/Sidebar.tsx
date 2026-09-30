@@ -1,19 +1,17 @@
-// Pinned projects (mockup `renderSidebar`): click selects, hover `+` opens the
-// type popover for that project, the dot shows a live agent pane, right-click
+// Pinned projects (mockup `renderSidebar`): click selects, hover `+` opens a
+// shell pane in that project (plan-17), the dot shows a live agent pane, right-click
 // unpins. The Settings entry is pinned to the foot.
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { Icon } from "../Icon";
 import type { Project } from "../db";
 import { useFiles, type DirtyFile } from "../files/store";
 import { useLayout } from "../layout/store";
-import { PANE_CAP, panes, type PaneKind } from "../layout/tree";
+import { PANE_CAP, panes } from "../layout/tree";
 import { tilde } from "../paths";
 import { clampMenu } from "../menu";
 import { liveProjectIds, useProjects } from "../projects/store";
-import { useSettings } from "../settings/store";
 import { useUi } from "../ui";
 import { relativeTo } from "./FilesView";
-import { TypePopover } from "./TypePopover";
 
 interface Props {
   onAddProject(): void;
@@ -41,7 +39,6 @@ export function Sidebar({ onAddProject }: Props) {
   const tree = useLayout((s) => s.tree);
   const agents = useLayout((s) => s.agents);
   const addPane = useLayout((s) => s.addPane);
-  const defaultKind = useSettings((s) => s.defaultKind);
   const view = useUi((s) => s.view);
   const setView = useUi((s) => s.setView);
   const showToast = useUi((s) => s.showToast);
@@ -49,9 +46,6 @@ export function Sidebar({ onAddProject }: Props) {
   const live = useMemo(() => liveProjectIds(tree, projects, agents), [tree, projects, agents]);
   const atCap = panes(tree).length >= PANE_CAP;
 
-  const [spawnFor, setSpawnFor] = useState<number | null>(null);
-  // The `+` that opened the popover closes it again (plan-13).
-  const toggleSpawn = (id: number) => setSpawnFor((cur) => (cur === id ? null : id));
   const [menu, setMenu] = useState<Menu | null>(null);
   const [pending, setPending] = useState<PendingUnpin | null>(null);
 
@@ -69,10 +63,9 @@ export function Sidebar({ onAddProject }: Props) {
     };
   }, [menu]);
 
-  const spawn = (project: Project, kind: PaneKind) => {
-    setSpawnFor(null);
+  const spawn = (project: Project) => {
     if (view !== "terminal") setView("terminal");
-    if (addPane(kind, project.path) === null) showToast(`Soft cap of ${PANE_CAP} reached`);
+    if (addPane(project.path) === null) showToast(`Soft cap of ${PANE_CAP} reached`);
   };
 
   useEffect(() => {
@@ -140,32 +133,21 @@ export function Sidebar({ onAddProject }: Props) {
                   tabIndex={0}
                   title={spawnTitle}
                   aria-disabled={noSpawn}
-                  data-popover-anchor={`spawn-${p.id}`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (!noSpawn) toggleSpawn(p.id);
+                    if (!noSpawn) spawn(p);
                   }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
                       e.stopPropagation();
-                      if (!noSpawn) toggleSpawn(p.id);
+                      if (!noSpawn) spawn(p);
                     }
                   }}
                 >
                   +
                 </span>
               </button>
-              {spawnFor === p.id && (
-                <TypePopover
-                  className="side"
-                  cwdLabel={tilde(p.path)}
-                  defaultKind={defaultKind}
-                  anchor={`spawn-${p.id}`}
-                  onClose={() => setSpawnFor(null)}
-                  onPick={(kind) => spawn(p, kind)}
-                />
-              )}
             </li>
           );
         })}

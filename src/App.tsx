@@ -49,7 +49,7 @@ async function boot() {
     useLayout.setState(restored);
   } else {
     const active = selectActive(useProjects.getState());
-    if (active) useLayout.getState().addPane("shell", active.path);
+    if (active) useLayout.getState().addPane(active.path);
   }
   startLayoutPersistence();
   startFilesPersistence();
@@ -125,12 +125,11 @@ export default function App() {
             <div className="toolbar">
               <NewTerminalButton
                 disabled={!active || atCap}
-                cwdLabel={cwdLabel ?? ""}
-                onPick={(kind) => active && addPane(kind, active.path)}
+                onNew={() => active && addPane(active.path)}
               />
               <span className="hint">{hint}</span>
               <span className="grow" />
-              <span className="hint">Drag the dividers to resize · click a badge to flip agent ⇄ shell</span>
+              <span className="hint">Drag the dividers to resize</span>
             </div>
             {/* Mount the layout only once the restore has run, so the seed pane is never raced. */}
             {ready && (

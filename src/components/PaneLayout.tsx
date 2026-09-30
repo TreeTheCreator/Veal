@@ -15,7 +15,7 @@ export function PaneLayout({ emptyHint }: { emptyHint: string }) {
   const tree = useLayout((s) => s.tree);
   const focused = useLayout((s) => s.focused);
   const agents = useLayout((s) => s.agents);
-  const { closePane, flipKind, focus } = useLayout.getState();
+  const { closePane, focus } = useLayout.getState();
 
   const hostRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -73,7 +73,6 @@ export function PaneLayout({ emptyHint }: { emptyHint: string }) {
             style={toStyle(geo.panes.get(p.id)!)}
             onFocus={() => focus(p.id)}
             onClose={() => requestClose(p.id)}
-            onFlip={() => flipKind(p.id)}
           />
         ))}
       {geo.dividers.map((d) => (

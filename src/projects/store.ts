@@ -75,8 +75,7 @@ export function projectForCwd(projects: Project[], cwd: string): Project | null 
 
 /**
  * Projects with a live agent: a pane whose spawn cwd is the project root and
- * whose shell has a *detected* agent under it (plan-08) — the manual label
- * does not count. Computed from cwd only — the multiplexer does not know
+ * whose shell has a *detected* agent under it (plan-08). Computed from cwd only — the multiplexer does not know
  * about projects (spec), so there is no projectId on panes. The value is the
  * agent's name, for the dot's title.
  */
@@ -88,7 +87,7 @@ export interface RunningAgent {
   where: string;
 }
 
-/** Panes whose shell has a *detected* agent, in tree order; the manual label does not count. */
+/** Panes whose shell has a *detected* agent, in tree order. */
 export function runningAgents(tree: LayoutNode | null, projects: Project[], agents: Map<number, string>): RunningAgent[] {
   return panes(tree)
     .filter((p) => agents.has(p.id))

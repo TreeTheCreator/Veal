@@ -8,7 +8,7 @@ import { AGENTS } from "../pty";
 import { SHELL_CHOICES, useSettings, type ShellChoice } from "../settings/store";
 
 export function SettingsView() {
-  const { theme, defaultKind, shell, restoreLayout, setTheme, setDefaultKind, setShell, setRestoreLayout } = useSettings();
+  const { theme, shell, restoreLayout, setTheme, setShell, setRestoreLayout } = useSettings();
   const [home, setHome] = useState("~");
 
   useEffect(() => {
@@ -31,13 +31,6 @@ export function SettingsView() {
                 {t[0].toUpperCase() + t.slice(1)}
               </button>
             ))}
-          </div>
-        </div>
-        <div className="srow">
-          <div className="lbl"><b>Default pane type</b><span>Preselected when you open a new terminal</span></div>
-          <div className="seg" role="radiogroup">
-            <button className={defaultKind === "shell" ? "on" : ""} onClick={() => setDefaultKind("shell")}>Shell</button>
-            <button className={defaultKind === "agent" ? "on" : ""} onClick={() => setDefaultKind("agent")}>Agent</button>
           </div>
         </div>
         <div className="srow">

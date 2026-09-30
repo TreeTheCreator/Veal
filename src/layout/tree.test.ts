@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { insert, panes, remove, setKind, setWeights, type LayoutNode, type PaneNode } from "./tree";
+import { insert, panes, remove, setWeights, type LayoutNode, type PaneNode } from "./tree";
 
-const pane = (id: number): PaneNode => ({ type: "pane", id, kind: "shell", cwd: "C:\\veal" });
+const pane = (id: number): PaneNode => ({ type: "pane", id, cwd: "C:\\veal" });
 
 // Compact shape for assertions: pane id, or [dir, ...children].
 function shape(node: LayoutNode | null): unknown {
@@ -76,15 +76,7 @@ describe("remove", () => {
   });
 });
 
-describe("setKind / setWeights", () => {
-  it("flips one pane and shares untouched subtrees", () => {
-    const t = four() as { children: LayoutNode[] };
-    const next = setKind(t as LayoutNode, 4, "agent") as { children: LayoutNode[] };
-    expect(panes(next as LayoutNode).find((p) => p.id === 4)?.kind).toBe("agent");
-    expect(next.children[0]).toBe(t.children[0]);
-    expect(next.children[1]).not.toBe(t.children[1]);
-  });
-
+describe("setWeights", () => {
   it("sets a nested split's weights by path", () => {
     const t = setWeights(four(), [1], 0, 0.4) as { children: LayoutNode[]; weights: number[] };
     expect(t.weights).toEqual([1, 1]);

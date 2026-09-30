@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { computeRects, dragWeight } from "./rects";
 import type { LayoutNode, PaneNode } from "./tree";
 
-const pane = (id: number): PaneNode => ({ type: "pane", id, kind: "shell", cwd: "C:\\veal" });
+const pane = (id: number): PaneNode => ({ type: "pane", id, cwd: "C:\\veal" });
 const row = (weights: number[], ...children: LayoutNode[]): LayoutNode => ({ type: "split", dir: "row", weights, children });
 const col = (weights: number[], ...children: LayoutNode[]): LayoutNode => ({ type: "split", dir: "col", weights, children });
 
