@@ -16,7 +16,14 @@ describe("terminalKeyAction (plan-16)", () => {
     expect(terminalKeyAction(key({ key: "c" }), true)).toBe("pass");
     expect(terminalKeyAction(key({ key: "c", ctrlKey: true, altKey: true }), true)).toBe("pass");
     expect(terminalKeyAction(key({ key: "c", metaKey: true }), true)).toBe("pass");
-    expect(terminalKeyAction(key({ key: "v", ctrlKey: true }), true)).toBe("pass");
+    expect(terminalKeyAction(key({ key: "v", ctrlKey: true, altKey: true }), true)).toBe("pass");
+    expect(terminalKeyAction(key({ key: "v" }), false)).toBe("pass");
+  });
+
+  it("Ctrl+V and Ctrl+Shift+V paste, selection or not", () => {
+    expect(terminalKeyAction(key({ key: "v", ctrlKey: true }), false)).toBe("paste");
+    expect(terminalKeyAction(key({ key: "v", ctrlKey: true }), true)).toBe("paste");
+    expect(terminalKeyAction(key({ key: "V", ctrlKey: true, shiftKey: true }), false)).toBe("paste");
   });
 
   it("view shortcuts win, and agree with viewForShortcut", () => {

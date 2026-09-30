@@ -61,8 +61,9 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
     });
     termRef.current = term;
     // Let Ctrl+1/2/3 reach the window listener (view switching) instead of
-    // the shell, and Ctrl+C over a selection copy it rather than send ^C
-    // (plan-16). Returning false keeps the key from xterm entirely.
+    // the shell, Ctrl+C over a selection copy it rather than send ^C
+    // (plan-16), and Ctrl+V paste rather than send ^V. Returning false keeps
+    // the key from xterm entirely.
     term.attachCustomKeyEventHandler((e) => {
       switch (terminalKeyAction(e, term.hasSelection())) {
         case "view":
@@ -74,6 +75,10 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
             term.clearSelection();
             e.preventDefault();
           }
+          return false;
+        case "paste":
+          // Keep it from xterm but let the browser's default paste run: the
+          // textarea's `paste` event is xterm's paste path (bracketed paste).
           return false;
         default:
           return true;
