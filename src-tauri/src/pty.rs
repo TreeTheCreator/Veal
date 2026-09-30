@@ -211,6 +211,8 @@ impl PtyRegistry {
         cmd.cwd(&opts.cwd);
         // Ignored by ConPTY; required on unix so the shell knows it has a real terminal.
         cmd.env("TERM", "xterm-256color");
+        // Tells the `veal` launchers not to exit this shell after launching.
+        cmd.env("VEAL_PANE", "1");
 
         let mut child = pair
             .slave
