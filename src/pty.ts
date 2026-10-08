@@ -7,6 +7,8 @@ export interface SpawnOptions {
   cols: number;
   rows: number;
   shell?: string;
+  /** http(s)_proxy for the shell, e.g. `http://127.0.0.1:15236`. */
+  proxy?: string;
 }
 
 /**
@@ -103,7 +105,7 @@ export async function spawnPty(opts: SpawnOptions, onData: OnData): Promise<PtyS
   ensureExitListener();
   ensureAgentListener();
   ensureDataListener();
-  const id = await invoke<number>("pty_spawn", { ...opts, shell: opts.shell ?? null });
+  const id = await invoke<number>("pty_spawn", { ...opts, shell: opts.shell ?? null, proxy: opts.proxy ?? null });
 
   // The drain: one loop per session, fetching until the outbox is empty. A
   // signal during a loop asks for one more fetch rather than a second loop;

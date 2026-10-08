@@ -218,6 +218,8 @@ svg.i { flex: 0 0 auto; }
 .srow .lbl b { display: block; font-weight: 500; color: var(--text); }
 .srow .lbl span { color: var(--muted); font-size: 12px; }
 .srow select { justify-self: start; }
+.srow input.port { justify-self: start; width: 110px; }
+.srow input.port[aria-invalid="true"] { border-color: var(--agent); box-shadow: 0 0 0 1px var(--agent) inset; }
 input, select { font: inherit; color: var(--text); background: var(--bg-sunk); border: 1px solid var(--line-strong); border-radius: 6px; padding: 7px 10px; }
 
 /* ---------- Overlays (mockup .scrim / .modal / .toast) ---------- */

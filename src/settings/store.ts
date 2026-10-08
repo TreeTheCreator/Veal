@@ -19,11 +19,14 @@ interface SettingsState {
   theme: Theme;
   shell: ShellChoice;
   restoreLayout: boolean;
+  /** Local proxy port for new panes; "" means no proxy. */
+  proxyPort: string;
   /** Loads every key; returns the raw map so the caller can read `layout` too. */
   load(): Promise<Record<string, string>>;
   setTheme(theme: Theme): void;
   setShell(shell: ShellChoice): void;
   setRestoreLayout(on: boolean): void;
+  setProxyPort(port: string): void;
 }
 
 export const isTheme = (v: string | undefined): v is Theme => v === "system" || v === "dark" || v === "light";
@@ -49,6 +52,7 @@ export const useSettings = create<SettingsState>((set) => ({
   theme: "system",
   shell: "auto",
   restoreLayout: true,
+  proxyPort: "",
 
   async load() {
     const all = await db.settingsGetAll();
@@ -57,6 +61,7 @@ export const useSettings = create<SettingsState>((set) => ({
       theme: isTheme(all.theme) ? all.theme : "system",
       shell: isShell(all.shell) ? all.shell : "auto",
       restoreLayout: all.restore_layout !== "0",
+      proxyPort: all.proxy_port ?? "",
     });
     return all;
   },
@@ -74,9 +79,27 @@ export const useSettings = create<SettingsState>((set) => ({
     set({ restoreLayout });
     persist("restore_layout", restoreLayout ? "1" : "0");
   },
+  setProxyPort(proxyPort) {
+    set({ proxyPort });
+    persist("proxy_port", proxyPort);
+  },
 }));
 
 /** The `shell` argument for pty_spawn: `undefined` lets Rust pick the default. */
 export function shellForSpawn(choice: ShellChoice): string | undefined {
   return choice === "auto" ? undefined : `${choice}.exe`;
+}
+
+/** A usable TCP port, or null for anything else (blank, partial, out of range). */
+export function parsePort(raw: string): number | null {
+  const s = raw.trim();
+  if (!/^\d{1,5}$/.test(s)) return null;
+  const n = Number(s);
+  return n >= 1 && n <= 65535 ? n : null;
+}
+
+/** The `proxy` argument for pty_spawn: `undefined` leaves the shell's env alone. */
+export function proxyForSpawn(port: string): string | undefined {
+  const n = parsePort(port);
+  return n === null ? undefined : `http://127.0.0.1:${n}`;
 }

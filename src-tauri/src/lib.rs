@@ -51,6 +51,7 @@ fn pty_spawn(
     cols: u16,
     rows: u16,
     shell: Option<String>,
+    proxy: Option<String>,
 ) -> Result<u32, String> {
     let ready_app = app.clone();
     let on_data_ready = move |id: u32| {
@@ -65,6 +66,7 @@ fn pty_spawn(
             cols,
             rows,
             shell,
+            proxy,
         },
         on_data_ready,
         on_exit,

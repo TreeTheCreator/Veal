@@ -4,7 +4,7 @@ const settingsGetAll = vi.fn<() => Promise<Record<string, string>>>();
 const settingsSet = vi.fn<(k: string, v: string) => Promise<void>>(async () => {});
 vi.mock("../db", () => ({ db: { settingsGetAll: () => settingsGetAll(), settingsSet: (k: string, v: string) => settingsSet(k, v) } }));
 
-const { useSettings, isTheme } = await import("./store");
+const { useSettings, isTheme, proxyForSpawn } = await import("./store");
 
 beforeEach(() => {
   settingsSet.mockClear();
@@ -25,5 +25,24 @@ describe("theme setting (plan-11)", () => {
     useSettings.getState().setTheme("light");
     expect(useSettings.getState().theme).toBe("light");
     expect(settingsSet).toHaveBeenCalledWith("theme", "light");
+  });
+});
+
+describe("proxy port setting", () => {
+  it("loads, defaults to none, and writes through", async () => {
+    settingsGetAll.mockResolvedValueOnce({});
+    await useSettings.getState().load();
+    expect(useSettings.getState().proxyPort).toBe("");
+    settingsGetAll.mockResolvedValueOnce({ proxy_port: "15236" });
+    await useSettings.getState().load();
+    expect(useSettings.getState().proxyPort).toBe("15236");
+    useSettings.getState().setProxyPort("8080");
+    expect(settingsSet).toHaveBeenCalledWith("proxy_port", "8080");
+  });
+
+  it("builds the proxy URL only from a valid port", () => {
+    expect(proxyForSpawn("15236")).toBe("http://127.0.0.1:15236");
+    expect(proxyForSpawn(" 80 ")).toBe("http://127.0.0.1:80");
+    for (const bad of ["", "0", "65536", "99999", "12a", "-1"]) expect(proxyForSpawn(bad), bad).toBeUndefined();
   });
 });

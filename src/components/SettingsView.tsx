@@ -5,10 +5,11 @@ import { useEffect, useState } from "react";
 import { PANE_CAP } from "../layout/tree";
 import { normalizePath, tilde } from "../paths";
 import { AGENTS } from "../pty";
-import { SHELL_CHOICES, useSettings, type ShellChoice } from "../settings/store";
+import { parsePort, SHELL_CHOICES, useSettings, type ShellChoice } from "../settings/store";
 
 export function SettingsView() {
-  const { theme, shell, restoreLayout, setTheme, setShell, setRestoreLayout } = useSettings();
+  const { theme, shell, restoreLayout, proxyPort, setTheme, setShell, setRestoreLayout, setProxyPort } = useSettings();
+  const portBad = proxyPort.trim() !== "" && parsePort(proxyPort) === null;
   const [home, setHome] = useState("~");
 
   useEffect(() => {
@@ -40,6 +41,24 @@ export function SettingsView() {
               <option key={c.value} value={c.value}>{c.label}</option>
             ))}
           </select>
+        </div>
+        <div className="srow">
+          <div className="lbl">
+            <b>Proxy port</b>
+            <span>
+              {portBad
+                ? "Not a valid port (1–65535); new panes start without a proxy"
+                : "Sets http_proxy and https_proxy to 127.0.0.1:port in new panes; blank for none"}
+            </span>
+          </div>
+          <input
+            className="mono port"
+            inputMode="numeric"
+            placeholder="None"
+            value={proxyPort}
+            aria-invalid={portBad}
+            onChange={(e) => setProxyPort(e.target.value.replace(/\D/g, "").slice(0, 5))}
+          />
         </div>
         <div className="srow">
           <div className="lbl"><b>New projects go in</b><span>Used when you leave the root directory blank</span></div>

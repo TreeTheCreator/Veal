@@ -111,6 +111,9 @@ pub struct SpawnOptions {
     pub rows: u16,
     /// Explicit shell/program. `None` picks the platform default.
     pub shell: Option<String>,
+    /// Proxy URL exported to the shell as http(s)_proxy. `None` leaves the
+    /// environment as inherited.
+    pub proxy: Option<String>,
 }
 
 struct PtyHandle {
@@ -213,6 +216,15 @@ impl PtyRegistry {
         cmd.env("TERM", "xterm-256color");
         // Tells the `veal` launchers not to exit this shell after launching.
         cmd.env("VEAL_PANE", "1");
+        // For a VPN that exposes a local HTTP proxy rather than routing the
+        // whole machine: proxy-aware CLIs (curl, git, npm, pip) pick these up.
+        if let Some(proxy) = opts.proxy.as_deref() {
+            cmd.env("http_proxy", proxy);
+            cmd.env("https_proxy", proxy);
+            cmd.env("no_proxy", "localhost,127.0.0.1,::1");
+            // Node's built-in fetch ignores the variables without this (Node 24+).
+            cmd.env("NODE_USE_ENV_PROXY", "1");
+        }
 
         let mut child = pair
             .slave
@@ -518,6 +530,7 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     shell: Some(echo_shell()),
+                    proxy: None,
                 },
                 move |id| {
                     let _ = ready_tx.send(id);
@@ -600,6 +613,7 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     shell: Some(echo_shell()),
+                    proxy: None,
                 },
                 |_| {},
                 |_, _| {},
@@ -609,6 +623,47 @@ mod tests {
         assert!(!registry.contains(1), "nothing should be registered");
     }
 
+    /// The proxy setting reaches the shell's environment.
+    #[test]
+    fn proxy_is_exported_to_the_shell() {
+        let registry = Arc::new(PtyRegistry::default());
+        let (ready_tx, ready_rx) = mpsc::channel::<u32>();
+        let id = registry
+            .spawn(
+                SpawnOptions {
+                    cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+                    cols: 80,
+                    rows: 24,
+                    shell: Some(echo_shell()),
+                    proxy: Some("http://127.0.0.1:15236".into()),
+                },
+                move |id| {
+                    let _ = ready_tx.send(id);
+                },
+                |_, _| {},
+            )
+            .expect("spawn");
+
+        let mut out = Vec::new();
+        if cfg!(windows) {
+            read_until(&registry, id, &ready_rx, &mut out, Duration::from_secs(10), |b| {
+                b.windows(4).any(|w| w == b"\x1b[6n")
+            });
+            registry.write(id, b"\x1b[1;1R").unwrap();
+        }
+        read_until(&registry, id, &ready_rx, &mut out, Duration::from_secs(10), |b| {
+            b.contains(&b'>') || b.contains(&b'$')
+        });
+        // The input echo shows the variable name; only the expansion has the port.
+        let cmd: &[u8] = if cfg!(windows) { b"echo %https_proxy%\r\n" } else { b"echo $https_proxy\n" };
+        registry.write(id, cmd).unwrap();
+        let seen = read_until(&registry, id, &ready_rx, &mut out, Duration::from_secs(10), |b| {
+            String::from_utf8_lossy(b).contains("127.0.0.1:15236")
+        });
+        assert!(seen, "proxy not in env; got: {:?}", String::from_utf8_lossy(&out));
+        registry.kill(id).ok();
+    }
+
     /// Plan-16: the footer reads `failed to start shell: X is not on PATH`.
     #[test]
     fn missing_shell_is_named_plainly() {
@@ -616,7 +671,7 @@ mod tests {
         let cwd = std::env::temp_dir().to_string_lossy().into_owned();
         let spawn = |shell: &str| {
             registry.spawn(
-                SpawnOptions { cwd: cwd.clone(), cols: 80, rows: 24, shell: Some(shell.into()) },
+                SpawnOptions { cwd: cwd.clone(), cols: 80, rows: 24, shell: Some(shell.into()), proxy: None },
                 |_| {},
                 |_, _| {},
             )
