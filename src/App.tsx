@@ -15,6 +15,7 @@ import { SettingsView } from "./components/SettingsView";
 import { Sidebar } from "./components/Sidebar";
 import { TasksView } from "./components/TasksView";
 import { Toast } from "./components/Toast";
+import { UpdateCard } from "./components/UpdateCard";
 import { parseAllFiles, startFilesPersistence } from "./files/persist";
 import { useFiles } from "./files/store";
 import { LAYOUT_KEY, parseLayout, startLayoutPersistence } from "./layout/persist";
@@ -156,6 +157,7 @@ export default function App() {
       {adding && <AddProjectModal onClose={closeAdd} />}
       <CloseGuard />
       <Toast />
+      <UpdateCard />
     </div>
   );
 }

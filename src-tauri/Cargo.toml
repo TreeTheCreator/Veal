@@ -28,6 +28,7 @@ tauri-plugin-single-instance = "2"
 notify = "8"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 trash = "5"
+tauri-plugin-updater = "2.12.0"
 
 [target.'cfg(windows)'.dependencies]
 # Already in the tree through Tauri; `fs::write` puts a saved file's

@@ -20,7 +20,7 @@ interface Pending {
   agents: RunningAgent[];
 }
 
-function flushAll(): Promise<void> {
+export function flushAll(): Promise<void> {
   const flushes = Promise.all([flushLayout(), flushFiles()]).then(() => {});
   const timeout = new Promise<void>((r) => setTimeout(r, FLUSH_TIMEOUT_MS));
   return Promise.race([flushes, timeout]);

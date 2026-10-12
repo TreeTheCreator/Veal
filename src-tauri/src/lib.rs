@@ -331,6 +331,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Arc::new(PtyRegistry::default()))
         .manage(TasksLock::default())
         .setup(|app| {
