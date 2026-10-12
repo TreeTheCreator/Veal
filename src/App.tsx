@@ -24,10 +24,9 @@ import { setHome, tilde } from "./paths";
 import { selectActive, useProjects } from "./projects/store";
 import { resetSessions } from "./pty";
 import { useSettings } from "./settings/store";
-import { isView, TAB_VIEWS, useUi, VIEW_KEY, viewForShortcut, type View } from "./ui";
+import { isView, TAB_LABEL, TAB_VIEWS, useUi, VIEW_KEY, viewForShortcut } from "./ui";
 import { startWatching } from "./watch";
 
-const TAB_LABEL: Record<View, string> = { terminal: "Terminal", files: "Files", tasks: "Tasks", settings: "Settings" };
 
 // StrictMode runs effects twice in dev; the restore must happen once.
 let bootStarted = false;
@@ -41,7 +40,8 @@ async function boot() {
     // Shells the page before this one (F5, "Refresh") left running.
     resetSessions().catch((e) => console.warn("pty_reset", e)),
   ]);
-  if (isView(settings[VIEW_KEY])) useUi.setState({ view: settings[VIEW_KEY] });
+  const view = settings[VIEW_KEY];
+  if (isView(view)) useUi.setState(view === "settings" ? { view } : { view, lastTab: view });
   const restoreOn = useSettings.getState().restoreLayout;
   const restored = restoreOn ? parseLayout(settings[LAYOUT_KEY]) : null;
   if (restoreOn) useFiles.getState().restore(parseAllFiles(settings));

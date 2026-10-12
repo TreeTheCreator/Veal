@@ -41,6 +41,7 @@ export function Sidebar({ onAddProject }: Props) {
   const addPane = useLayout((s) => s.addPane);
   const view = useUi((s) => s.view);
   const setView = useUi((s) => s.setView);
+  const toggleSettings = useUi((s) => s.toggleSettings);
   const showToast = useUi((s) => s.showToast);
 
   const live = useMemo(() => liveProjectIds(tree, projects, agents), [tree, projects, agents]);
@@ -158,7 +159,7 @@ export function Sidebar({ onAddProject }: Props) {
       <div className="side-foot">
         <button
           className={`settings-btn${view === "settings" ? " active" : ""}`}
-          onClick={() => setView("settings")}
+          onClick={toggleSettings}
         >
           <Icon name="gear" />Settings
         </button>

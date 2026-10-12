@@ -8,6 +8,8 @@ export type View = "terminal" | "files" | "tasks" | "settings";
 
 export const TAB_VIEWS: View[] = ["terminal", "files", "tasks"];
 
+export const TAB_LABEL: Record<View, string> = { terminal: "Terminal", files: "Files", tasks: "Tasks", settings: "Settings" };
+
 export const VIEW_KEY = "view";
 
 export const isView = (v: string | undefined): v is View =>
@@ -44,19 +46,28 @@ const TOAST_MS = 2200;
 
 interface UiState {
   view: View;
+  /** The tab Settings returns to: the last of Terminal / Files / Tasks shown. */
+  lastTab: View;
   toast: string | null;
   setView(view: View): void;
+  /** The sidebar's Settings button: opens Settings, or returns to `lastTab` if it is open. */
+  toggleSettings(): void;
   showToast(message: string): void;
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
-export const useUi = create<UiState>((set) => ({
+export const useUi = create<UiState>((set, get) => ({
   view: "terminal",
+  lastTab: "terminal",
   toast: null,
   setView(view) {
-    set({ view });
+    set(view === "settings" ? { view } : { view, lastTab: view });
     db.settingsSet(VIEW_KEY, view).catch((e) => console.warn("settings_set", VIEW_KEY, e));
+  },
+  toggleSettings() {
+    const { view, lastTab, setView } = get();
+    setView(view === "settings" ? lastTab : "settings");
   },
   showToast(toast) {
     set({ toast });

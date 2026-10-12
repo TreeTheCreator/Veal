@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { terminalKeyAction, viewForShortcut } from "./ui";
+import { terminalKeyAction, useUi, viewForShortcut } from "./ui";
 
 const key = (init: Partial<KeyboardEvent> & { key: string }) =>
   ({ type: "keydown", ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, ...init }) as KeyboardEvent;
@@ -31,5 +31,21 @@ describe("terminalKeyAction (plan-16)", () => {
     expect(terminalKeyAction(e, true)).toBe("view");
     expect(viewForShortcut(e)).toBe("files");
     expect(terminalKeyAction(key({ key: "9", ctrlKey: true }), false)).toBe("pass");
+  });
+});
+
+describe("Settings toggle", () => {
+  it("returns to the last tab shown, whether toggled or sent back", () => {
+    useUi.getState().setView("files");
+    useUi.getState().toggleSettings();
+    expect(useUi.getState().view).toBe("settings");
+    expect(useUi.getState().lastTab).toBe("files");
+    useUi.getState().toggleSettings();
+    expect(useUi.getState().view).toBe("files");
+
+    useUi.getState().setView("tasks");
+    useUi.getState().setView("settings");
+    useUi.getState().setView(useUi.getState().lastTab);
+    expect(useUi.getState().view).toBe("tasks");
   });
 });

@@ -2,13 +2,17 @@
 // veal.db on change; read-only rows state what the app currently does.
 import { homeDir } from "@tauri-apps/api/path";
 import { useEffect, useState } from "react";
+import { Icon } from "../Icon";
 import { PANE_CAP } from "../layout/tree";
 import { normalizePath, tilde } from "../paths";
 import { AGENTS } from "../pty";
 import { parsePort, SHELL_CHOICES, useSettings, type ShellChoice } from "../settings/store";
+import { TAB_LABEL, useUi } from "../ui";
 
 export function SettingsView() {
   const { theme, shell, restoreLayout, proxyPort, setTheme, setShell, setRestoreLayout, setProxyPort } = useSettings();
+  const lastTab = useUi((s) => s.lastTab);
+  const setView = useUi((s) => s.setView);
   const portBad = proxyPort.trim() !== "" && parsePort(proxyPort) === null;
   const [home, setHome] = useState("~");
 
@@ -19,6 +23,9 @@ export function SettingsView() {
   return (
     <>
       <div className="toolbar">
+        <button className="back-btn" onClick={() => setView(lastTab)} title={`Back to ${TAB_LABEL[lastTab]}`} aria-label={`Back to ${TAB_LABEL[lastTab]}`}>
+          <Icon name="back" />
+        </button>
         <span style={{ color: "var(--text)" }}>Settings</span>
         <span className="grow" />
         <span className="hint">Saved to veal.db</span>
