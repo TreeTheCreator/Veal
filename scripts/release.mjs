@@ -34,10 +34,12 @@ if (!env.TAURI_SIGNING_PRIVATE_KEY) {
   env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ??= "";
 }
 
-const run = (cmd, argv) => execFileSync(cmd, argv, { stdio: "inherit", env, shell: process.platform === "win32" });
+// pnpm is a .cmd shim on Windows and needs a shell; gh is a real .exe and
+// must not get one, or its spaced arguments (title, notes) are split.
+const run = (cmd, argv, shell = false) => execFileSync(cmd, argv, { stdio: "inherit", env, shell });
 
 console.log(`Building Veal ${version}…`);
-run("pnpm", ["tauri", "build"]);
+run("pnpm", ["tauri", "build"], process.platform === "win32");
 
 const dir = "src-tauri/target/release/bundle/nsis";
 const installer = `Veal_${version}_x64-setup.exe`;
