@@ -32,8 +32,9 @@ tauri-plugin-updater = "2.12.0"
 
 [target.'cfg(windows)'.dependencies]
 # Already in the tree through Tauri; `fs::write` puts a saved file's
-# hidden/system bits back after the rename (plan-13).
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+# hidden/system bits back after the rename (plan-13). WinHttp and Foundation
+# read the user's proxy setting (plan-18).
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Networking_WinHttp", "Win32_Foundation"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

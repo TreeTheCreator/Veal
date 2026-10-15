@@ -16,6 +16,7 @@
   --shell: #7aa2ff;
   --shell-soft: rgba(122, 162, 255, 0.16);
   --ok: #62c483;
+  --warn: #e3b34f;
   --sel: rgba(255, 255, 255, 0.07);
   --num: #e3b34f;
   --shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
@@ -30,7 +31,7 @@
     --bg: #f4f4f6; --bg-sunk: #ffffff; --panel: #fafafb; --panel-2: #ececef;
     --line: #e1e1e5; --line-strong: #cbcbd1; --text: #141416; --text-2: #55555d; --muted: #8a8a92;
     --accent: #2f62d6; --accent-ink: #ffffff; --agent: #cf4a33; --agent-soft: rgba(207, 74, 51, 0.12);
-    --shell: #2f62d6; --shell-soft: rgba(47, 98, 214, 0.12); --ok: #2f8f52; --sel: rgba(0, 0, 0, 0.06);
+    --shell: #2f62d6; --shell-soft: rgba(47, 98, 214, 0.12); --ok: #2f8f52; --warn: #9a6a00; --sel: rgba(0, 0, 0, 0.06);
     --shadow: 0 16px 40px rgba(20, 20, 30, 0.18); color-scheme: light;
   }
 }
@@ -38,7 +39,7 @@
   --bg: #f4f4f6; --bg-sunk: #ffffff; --panel: #fafafb; --panel-2: #ececef;
   --line: #e1e1e5; --line-strong: #cbcbd1; --text: #141416; --text-2: #55555d; --muted: #8a8a92;
   --accent: #2f62d6; --accent-ink: #ffffff; --agent: #cf4a33; --agent-soft: rgba(207, 74, 51, 0.12);
-  --shell: #2f62d6; --shell-soft: rgba(47, 98, 214, 0.12); --ok: #2f8f52; --sel: rgba(0, 0, 0, 0.06);
+  --shell: #2f62d6; --shell-soft: rgba(47, 98, 214, 0.12); --ok: #2f8f52; --warn: #9a6a00; --sel: rgba(0, 0, 0, 0.06);
   --shadow: 0 16px 40px rgba(20, 20, 30, 0.18); color-scheme: light;
 }
 
@@ -222,6 +223,22 @@ svg.i { flex: 0 0 auto; }
 .srow select { justify-self: start; }
 .srow input.port { justify-self: start; width: 110px; }
 .srow input.port[aria-invalid="true"] { border-color: var(--agent); box-shadow: 0 0 0 1px var(--agent) inset; }
+/* Proxy rows (plan-18) */
+.proxy-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.srow input.bypass { flex: 1; min-width: 0; }
+.proxy-ctl .btn, .proxy-line .btn { padding: 3px 10px; font-size: 12px; }
+.proxy-result { display: grid; gap: 4px; min-width: 0; }
+.proxy-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.proxy-url { overflow-wrap: anywhere; }
+.proxy-url.warn, .proxy-note.warn { color: var(--warn); }
+.proxy-url.bad, .proxy-note.bad { color: var(--agent); }
+.proxy-note { font-size: 12px; color: var(--text-2); }
+.proxy-details { padding: 10px 0 13px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--text-2); }
+.proxy-details summary { cursor: pointer; color: var(--muted); }
+.proxy-details dl { display: grid; grid-template-columns: 120px 1fr; gap: 4px 16px; margin: 10px 0; }
+.proxy-details dt { color: var(--muted); }
+.proxy-details dd { margin: 0; color: var(--text); overflow-wrap: anywhere; min-width: 0; }
+.proxy-details p { margin: 6px 0 0; line-height: 1.5; }
 input, select { font: inherit; color: var(--text); background: var(--bg-sunk); border: 1px solid var(--line-strong); border-radius: 6px; padding: 7px 10px; }
 
 /* ---------- Overlays (mockup .scrim / .modal / .toast) ---------- */

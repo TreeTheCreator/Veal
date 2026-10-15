@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import libRs from "../src-tauri/src/lib.rs?raw";
 
 // The Tauri bridge, reduced to what pty.ts touches: `invoke` answers
 // pty_spawn with a fresh id and pty_read with an empty buffer, `listen`
@@ -16,7 +17,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 
-const { resetSessions, spawnPty } = await import("./pty");
+const { resetSessions, resolveProxy, spawnPty } = await import("./pty");
 
 const fire = (name: string, payload: unknown) => events.get(name)!({ payload });
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -189,5 +190,38 @@ describe("resetSessions (plan-16)", () => {
     const before = reads();
     fire("pty-data", { id: s.id });
     expect(reads()).toBe(before);
+  });
+});
+
+describe("proxy arguments (plan-18)", () => {
+  // A mistyped key reaches Rust as a silent `None`, so the keys are checked
+  // against the command's own parameter list in lib.rs.
+  const rustParams = (cmd: string) => {
+    const sig = libRs.match(new RegExp(`fn ${cmd}\(([^)]*)\)`))![1];
+    return [...sig.matchAll(/(\w+):\s*([^,]+)/g)]
+      .filter(([, , type]) => !type.includes("State<") && !type.includes("AppHandle"))
+      .map(([, name]) => name.replace(/_(\w)/g, (_m, c: string) => c.toUpperCase()))
+      .sort();
+  };
+
+  it("pty_spawn gets exactly the keys Rust takes", async () => {
+    await spawnPty({ ...opts, shell: "pwsh.exe", proxyMode: "manual", proxyPort: "15236", proxyBypass: ".corp" }, (_b, done) => done());
+    const args = invoke.mock.calls.find(([cmd]) => cmd === "pty_spawn")![1] as Record<string, unknown>;
+    expect(Object.keys(args).sort()).toEqual(rustParams("pty_spawn"));
+    expect(args).toMatchObject({ proxyMode: "manual", proxyPort: "15236", proxyBypass: ".corp" });
+  });
+
+  it("an unset proxy setting is sent as null, never dropped", async () => {
+    await spawn();
+    const args = invoke.mock.calls.find(([cmd]) => cmd === "pty_spawn")![1] as Record<string, unknown>;
+    expect(Object.keys(args).sort()).toEqual(rustParams("pty_spawn"));
+    expect(args).toMatchObject({ shell: null, proxyMode: null, proxyPort: null, proxyBypass: null });
+  });
+
+  it("proxy_resolve gets exactly the keys Rust takes", async () => {
+    invoke.mockResolvedValueOnce({ url: null });
+    await resolveProxy({ proxyMode: "system", proxyPort: "", proxyBypass: ".corp" });
+    expect(invoke).toHaveBeenCalledWith("proxy_resolve", { proxyMode: "system", proxyPort: "", proxyBypass: ".corp" });
+    expect(Object.keys(invoke.mock.calls[0][1] as object).sort()).toEqual(rustParams("proxy_resolve"));
   });
 });

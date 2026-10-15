@@ -345,7 +345,6 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     shell: Some(shell.into()),
-                    proxy: None,
                 },
                 move |id| {
                     let _ = tx.send(id);

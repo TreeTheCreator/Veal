@@ -6,6 +6,11 @@ import { db } from "../db";
 export type ShellChoice = "auto" | "pwsh" | "powershell" | "cmd" | "wsl";
 /** Plan-11: `system` follows the OS; the others pin `data-theme` on <html>. */
 export type Theme = "system" | "dark" | "light";
+/** Plan-18: where a new pane's proxy comes from. */
+export type ProxyMode = "off" | "manual" | "system";
+
+/** Mirrors `proxy::DEFAULT_BYPASS` in Rust. */
+export const DEFAULT_BYPASS = "localhost,127.0.0.1,::1,.local";
 
 export const SHELL_CHOICES: Array<{ value: ShellChoice; label: string }> = [
   { value: "auto", label: "Auto (pwsh, else powershell)" },
@@ -19,14 +24,19 @@ interface SettingsState {
   theme: Theme;
   shell: ShellChoice;
   restoreLayout: boolean;
-  /** Local proxy port for new panes; "" means no proxy. */
+  proxyMode: ProxyMode;
+  /** Local proxy port for Manual mode; kept, not cleared, in the other modes. */
   proxyPort: string;
+  /** `no_proxy` for new panes, comma separated; applies in every mode. */
+  proxyBypass: string;
   /** Loads every key; returns the raw map so the caller can read `layout` too. */
   load(): Promise<Record<string, string>>;
   setTheme(theme: Theme): void;
   setShell(shell: ShellChoice): void;
   setRestoreLayout(on: boolean): void;
+  setProxyMode(mode: ProxyMode): void;
   setProxyPort(port: string): void;
+  setProxyBypass(bypass: string): void;
 }
 
 export const isTheme = (v: string | undefined): v is Theme => v === "system" || v === "dark" || v === "light";
@@ -41,6 +51,7 @@ export function applyTheme(theme: Theme): void {
   if (theme === "system") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.dataset.theme = theme;
 }
+const isProxyMode = (v: string | undefined): v is ProxyMode => v === "off" || v === "manual" || v === "system";
 const isShell = (v: string | undefined): v is ShellChoice =>
   SHELL_CHOICES.some((c) => c.value === v);
 
@@ -52,16 +63,27 @@ export const useSettings = create<SettingsState>((set) => ({
   theme: "system",
   shell: "auto",
   restoreLayout: true,
+  proxyMode: "system",
   proxyPort: "",
+  proxyBypass: DEFAULT_BYPASS,
 
   async load() {
     const all = await db.settingsGetAll();
     applyTheme(isTheme(all.theme) ? all.theme : "system");
+    // Before plan-18 a valid port was the only way to get a proxy: keep those
+    // users on it. Saved once, so clearing the port later does not flip the mode.
+    const savedMode = all.proxy_mode;
+    const proxyMode: ProxyMode = isProxyMode(savedMode)
+      ? savedMode
+      : parsePort(all.proxy_port ?? "") === null ? "system" : "manual";
+    if (proxyMode !== savedMode) persist("proxy_mode", proxyMode);
     set({
       theme: isTheme(all.theme) ? all.theme : "system",
       shell: isShell(all.shell) ? all.shell : "auto",
       restoreLayout: all.restore_layout !== "0",
+      proxyMode,
       proxyPort: all.proxy_port ?? "",
+      proxyBypass: all.proxy_bypass ?? DEFAULT_BYPASS,
     });
     return all;
   },
@@ -79,9 +101,17 @@ export const useSettings = create<SettingsState>((set) => ({
     set({ restoreLayout });
     persist("restore_layout", restoreLayout ? "1" : "0");
   },
+  setProxyMode(proxyMode) {
+    set({ proxyMode });
+    persist("proxy_mode", proxyMode);
+  },
   setProxyPort(proxyPort) {
     set({ proxyPort });
     persist("proxy_port", proxyPort);
+  },
+  setProxyBypass(proxyBypass) {
+    set({ proxyBypass });
+    persist("proxy_bypass", proxyBypass);
   },
 }));
 
@@ -96,10 +126,4 @@ export function parsePort(raw: string): number | null {
   if (!/^\d{1,5}$/.test(s)) return null;
   const n = Number(s);
   return n >= 1 && n <= 65535 ? n : null;
-}
-
-/** The `proxy` argument for pty_spawn: `undefined` leaves the shell's env alone. */
-export function proxyForSpawn(port: string): string | undefined {
-  const n = parsePort(port);
-  return n === null ? undefined : `http://127.0.0.1:${n}`;
 }

@@ -12,7 +12,7 @@ import type { PaneNode } from "../layout/tree";
 import { basename, tilde } from "../paths";
 import { useLayout } from "../layout/store";
 import { projectForCwd, useProjects } from "../projects/store";
-import { proxyForSpawn, shellForSpawn, useSettings } from "../settings/store";
+import { shellForSpawn, useSettings } from "../settings/store";
 import { terminalTheme, useEffectiveMode } from "../theme";
 import { terminalKeyAction } from "../ui";
 
@@ -141,8 +141,9 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
     observer.observe(host);
 
     // The shell and proxy settings are read at spawn time: they apply to new panes only.
-    const shell = shellForSpawn(useSettings.getState().shell);
-    const proxy = proxyForSpawn(useSettings.getState().proxyPort);
+    const settings = useSettings.getState();
+    const shell = shellForSpawn(settings.shell);
+    const { proxyMode, proxyPort, proxyBypass } = settings;
     // A spawn is the one thing that notices a pinned root going away or
     // coming back (plan-16); the sidebar shows it.
     const markRoot = (missing: boolean) => {
@@ -152,7 +153,7 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
     };
     // xterm's write callback fires once the bytes are parsed; the next
     // fetch waits for it (plan-15).
-    spawnPty({ cwd, cols, rows, shell, proxy }, (bytes, done) => term.write(bytes, done))
+    spawnPty({ cwd, cols, rows, shell, proxyMode, proxyPort, proxyBypass }, (bytes, done) => term.write(bytes, done))
       .then((s) => {
         if (disposed) {
           s.kill().catch(() => {});

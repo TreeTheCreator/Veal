@@ -111,9 +111,6 @@ pub struct SpawnOptions {
     pub rows: u16,
     /// Explicit shell/program. `None` picks the platform default.
     pub shell: Option<String>,
-    /// Proxy URL exported to the shell as http(s)_proxy. `None` leaves the
-    /// environment as inherited.
-    pub proxy: Option<String>,
 }
 
 struct PtyHandle {
@@ -187,14 +184,28 @@ fn check_shell(shell: &str) -> Result<(), String> {
 }
 
 impl PtyRegistry {
+    /// Spawn a shell with no extra environment.
+    #[cfg(test)]
+    pub fn spawn(
+        self: &Arc<Self>,
+        opts: SpawnOptions,
+        on_data_ready: impl FnMut(u32) + Send + 'static,
+        on_exit: impl FnOnce(u32, Option<i32>) + Send + 'static,
+    ) -> Result<u32, String> {
+        self.spawn_with_env(opts, Vec::new(), on_data_ready, on_exit)
+    }
+
     /// Spawn a shell. `on_data_ready` runs on the reader thread when the
     /// outbox goes from empty to non-empty (the frontend then `take`s until it
     /// is empty again); `on_exit` runs exactly once, after the handle has been
     /// removed from the registry, with the pane id and exit code (`None` if it
     /// could not be read).
-    pub fn spawn(
+    /// `env` is set on top of the inherited environment: the proxy
+    /// variables `pty_spawn` resolved from the proxy mode (plan-18).
+    pub fn spawn_with_env(
         self: &Arc<Self>,
         opts: SpawnOptions,
+        env: Vec<(String, String)>,
         mut on_data_ready: impl FnMut(u32) + Send + 'static,
         on_exit: impl FnOnce(u32, Option<i32>) + Send + 'static,
     ) -> Result<u32, String> {
@@ -218,12 +229,8 @@ impl PtyRegistry {
         cmd.env("VEAL_PANE", "1");
         // For a VPN that exposes a local HTTP proxy rather than routing the
         // whole machine: proxy-aware CLIs (curl, git, npm, pip) pick these up.
-        if let Some(proxy) = opts.proxy.as_deref() {
-            cmd.env("http_proxy", proxy);
-            cmd.env("https_proxy", proxy);
-            cmd.env("no_proxy", "localhost,127.0.0.1,::1");
-            // Node's built-in fetch ignores the variables without this (Node 24+).
-            cmd.env("NODE_USE_ENV_PROXY", "1");
+        for (key, value) in env {
+            cmd.env(key, value);
         }
 
         let mut child = pair
@@ -530,7 +537,6 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     shell: Some(echo_shell()),
-                    proxy: None,
                 },
                 move |id| {
                     let _ = ready_tx.send(id);
@@ -613,7 +619,6 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     shell: Some(echo_shell()),
-                    proxy: None,
                 },
                 |_| {},
                 |_, _| {},
@@ -623,20 +628,23 @@ mod tests {
         assert!(!registry.contains(1), "nothing should be registered");
     }
 
-    /// The proxy setting reaches the shell's environment.
+    /// The proxy setting reaches the shell's environment, by the same path
+    /// `pty_spawn` takes (plan-18).
     #[test]
     fn proxy_is_exported_to_the_shell() {
+        use crate::proxy::{proxy_env, resolve, Lookup, Mode};
+        let resolved = resolve(Mode::Manual, Some("15236"), || Lookup::None, |_| true);
         let registry = Arc::new(PtyRegistry::default());
         let (ready_tx, ready_rx) = mpsc::channel::<u32>();
         let id = registry
-            .spawn(
+            .spawn_with_env(
                 SpawnOptions {
                     cwd: std::env::temp_dir().to_string_lossy().into_owned(),
                     cols: 80,
                     rows: 24,
                     shell: Some(echo_shell()),
-                    proxy: Some("http://127.0.0.1:15236".into()),
                 },
+                proxy_env(&resolved, None),
                 move |id| {
                     let _ = ready_tx.send(id);
                 },
@@ -671,7 +679,7 @@ mod tests {
         let cwd = std::env::temp_dir().to_string_lossy().into_owned();
         let spawn = |shell: &str| {
             registry.spawn(
-                SpawnOptions { cwd: cwd.clone(), cols: 80, rows: 24, shell: Some(shell.into()), proxy: None },
+                SpawnOptions { cwd: cwd.clone(), cols: 80, rows: 24, shell: Some(shell.into()) },
                 |_| {},
                 |_, _| {},
             )

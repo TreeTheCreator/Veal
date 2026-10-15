@@ -1,7 +1,9 @@
 mod agents;
 mod db;
 mod fs;
+mod proxy;
 mod pty;
+mod sysproxy;
 mod tasks;
 mod watch;
 
@@ -43,7 +45,32 @@ fn watch_root(app: &tauri::AppHandle, watchers: &Watchers, project: &Project) {
     }
 }
 
+/// One path for a pane's spawn and the Settings row, so Settings shows
+/// what a new pane gets (plan-18). A missing or unknown mode is the
+/// default, Follow system. Blocks for the liveness check: at most two
+/// 200 ms connects, only when Windows names a loopback proxy.
+fn resolve_proxy(mode: Option<&str>, port: Option<&str>) -> proxy::Resolved {
+    let mode = mode.and_then(proxy::Mode::parse).unwrap_or(proxy::Mode::System);
+    proxy::resolve(mode, port, sysproxy::lookup, proxy::tcp_probe)
+}
+
+/// The Settings row: the decision and the exact variables a new pane gets.
+#[derive(Serialize)]
+struct ProxyPreview {
+    #[serde(flatten)]
+    resolved: proxy::Resolved,
+    env: Vec<(String, String)>,
+}
+
 #[tauri::command(async)]
+fn proxy_resolve(proxy_mode: Option<String>, proxy_port: Option<String>, proxy_bypass: Option<String>) -> ProxyPreview {
+    let resolved = resolve_proxy(proxy_mode.as_deref(), proxy_port.as_deref());
+    let env = proxy::proxy_env(&resolved, proxy_bypass.as_deref());
+    ProxyPreview { resolved, env }
+}
+
+#[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
 fn pty_spawn(
     app: tauri::AppHandle,
     registry: State<'_, Arc<PtyRegistry>>,
@@ -51,8 +78,12 @@ fn pty_spawn(
     cols: u16,
     rows: u16,
     shell: Option<String>,
-    proxy: Option<String>,
+    proxy_mode: Option<String>,
+    proxy_port: Option<String>,
+    proxy_bypass: Option<String>,
 ) -> Result<u32, String> {
+    let resolved = resolve_proxy(proxy_mode.as_deref(), proxy_port.as_deref());
+    let env = proxy::proxy_env(&resolved, proxy_bypass.as_deref());
     let ready_app = app.clone();
     let on_data_ready = move |id: u32| {
         let _ = ready_app.emit("pty-data", PtyData { id });
@@ -60,14 +91,14 @@ fn pty_spawn(
     let on_exit = move |id: u32, code: Option<i32>| {
         let _ = app.emit("pty-exit", PtyExit { id, code });
     };
-    registry.spawn(
+    registry.spawn_with_env(
         SpawnOptions {
             cwd,
             cols,
             rows,
             shell,
-            proxy,
         },
+        env,
         on_data_ready,
         on_exit,
     )
@@ -363,6 +394,7 @@ pub fn run() {
             pty_resize,
             pty_kill,
             pty_reset,
+            proxy_resolve,
             projects_list,
             projects_add,
             projects_remove,

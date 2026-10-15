@@ -1,14 +1,52 @@
 // Thin wrapper over the pty_* commands so components never call `invoke` directly.
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { ProxyMode } from "./settings/store";
 
 export interface SpawnOptions {
   cwd: string;
   cols: number;
   rows: number;
   shell?: string;
-  /** http(s)_proxy for the shell, e.g. `http://127.0.0.1:15236`. */
-  proxy?: string;
+  /** Plan-18: Rust resolves the proxy from these at spawn time. */
+  proxyMode?: ProxyMode;
+  proxyPort?: string;
+  /** `no_proxy`, comma separated; omitted means Rust's default. */
+  proxyBypass?: string;
+}
+
+/** What `proxy_resolve` answers: exactly what a new pane would get (plan-18). */
+export interface ProxyResolved {
+  source: ProxyMode;
+  /** `http://host:port`, or `socks5h://host:port` when `socksOnly`; null exports nothing. */
+  url: string | null;
+  socksOnly: boolean;
+  /** Windows' bypass entries that are added to `no_proxy`. */
+  bypass: string[];
+  notes: string[];
+  /** The exact variables a new pane gets, in order. */
+  env: Array<[string, string]>;
+  diag: {
+    lookup: "static" | "script" | "autodetect" | "none" | "unavailable" | null;
+    rawProxy: string | null;
+    rawBypass: string | null;
+    scriptUrl: string | null;
+    host: string | null;
+    answered: string | null;
+    lookupMs: number | null;
+    errorCode: number | null;
+  };
+}
+
+type ProxyOptions = Pick<SpawnOptions, "proxyMode" | "proxyPort" | "proxyBypass">;
+
+/** The argument object both proxy commands take; keys must match Rust's. */
+function proxyArgs(opts: ProxyOptions) {
+  return { proxyMode: opts.proxyMode ?? null, proxyPort: opts.proxyPort ?? null, proxyBypass: opts.proxyBypass ?? null };
+}
+
+export function resolveProxy(opts: ProxyOptions): Promise<ProxyResolved> {
+  return invoke<ProxyResolved>("proxy_resolve", proxyArgs(opts));
 }
 
 /**
@@ -105,7 +143,13 @@ export async function spawnPty(opts: SpawnOptions, onData: OnData): Promise<PtyS
   ensureExitListener();
   ensureAgentListener();
   ensureDataListener();
-  const id = await invoke<number>("pty_spawn", { ...opts, shell: opts.shell ?? null, proxy: opts.proxy ?? null });
+  const id = await invoke<number>("pty_spawn", {
+    cwd: opts.cwd,
+    cols: opts.cols,
+    rows: opts.rows,
+    shell: opts.shell ?? null,
+    ...proxyArgs(opts),
+  });
 
   // The drain: one loop per session, fetching until the outbox is empty. A
   // signal during a loop asks for one more fetch rather than a second loop;
