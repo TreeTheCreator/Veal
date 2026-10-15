@@ -1,6 +1,6 @@
 [package]
 name = "veal"
-version = "0.1.0"
+version = "0.1.1"
 description = "Terminal multiplexer, file viewer and task manager for agentic dev work"
 authors = ["Triyan"]
 edition = "2021"
