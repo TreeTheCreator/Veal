@@ -24,20 +24,36 @@ export function viewForShortcut(e: KeyboardEvent): View | null {
   return isViewShortcut(e) ? TAB_VIEWS[Number(e.key) - 1] : null;
 }
 
-export type TerminalKeyAction = "copy" | "paste" | "view" | "pass";
+export type TerminalKeyAction = "copy" | "paste" | "newline" | "view" | "pass";
+
+/**
+ * What Shift+Enter and Ctrl+Enter send: ESC CR, the bytes of Alt+Enter, which
+ * agent CLIs such as Claude Code read as "new line" rather than "submit".
+ * xterm alone sends a bare CR for both, so they submitted.
+ */
+export const NEWLINE_SEQUENCE = "\x1b\r";
+
+/**
+ * What Ctrl+V sends when the clipboard holds an image and no text: ESC v, the
+ * bytes of Alt+V, Claude Code's image paste on Windows. The browser's paste
+ * event carries no text then, so xterm would paste nothing.
+ */
+export const IMAGE_PASTE_SEQUENCE = "\x1bv";
 
 /**
  * What a keydown over a terminal does before xterm sees it (plan-16):
  * Ctrl+C or Ctrl+Shift+C with a selection copies it (as Windows Terminal
  * does) instead of sending ^C; Ctrl+V or Ctrl+Shift+V pastes (xterm alone
  * would send ^V, which is how dictation apps' synthetic Ctrl+V got lost);
- * a view shortcut goes to the window; the rest, including Ctrl+C with
- * nothing selected, reaches the shell.
+ * Shift+Enter or Ctrl+Enter sends NEWLINE_SEQUENCE; a view shortcut goes to
+ * the window; the rest, including Ctrl+C with nothing selected, reaches the
+ * shell.
  */
 export function terminalKeyAction(e: KeyboardEvent, hasSelection: boolean): TerminalKeyAction {
   if (isViewShortcut(e)) return "view";
   if (hasSelection && e.ctrlKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "c") return "copy";
   if (e.ctrlKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "v") return "paste";
+  if (e.key === "Enter" && (e.shiftKey || e.ctrlKey) && !e.altKey && !e.metaKey) return "newline";
   return "pass";
 }
 

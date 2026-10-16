@@ -14,7 +14,7 @@ import { useLayout } from "../layout/store";
 import { projectForCwd, useProjects } from "../projects/store";
 import { shellForSpawn, useSettings } from "../settings/store";
 import { terminalTheme, useEffectiveMode } from "../theme";
-import { terminalKeyAction } from "../ui";
+import { IMAGE_PASTE_SEQUENCE, NEWLINE_SEQUENCE, terminalKeyAction } from "../ui";
 
 // Fallback when the container has no layout yet at first fit().
 const DEFAULT_COLS = 120;
@@ -62,8 +62,9 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
     termRef.current = term;
     // Let Ctrl+1/2/3 reach the window listener (view switching) instead of
     // the shell, Ctrl+C over a selection copy it rather than send ^C
-    // (plan-16), and Ctrl+V paste rather than send ^V. Returning false keeps
-    // the key from xterm entirely.
+    // (plan-16), Ctrl+V paste rather than send ^V, and Shift/Ctrl+Enter send
+    // Alt+Enter's bytes (a new line in agent CLIs). Returning false keeps the
+    // key from xterm entirely.
     term.attachCustomKeyEventHandler((e) => {
       switch (terminalKeyAction(e, term.hasSelection())) {
         case "view":
@@ -80,6 +81,12 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
           // Keep it from xterm but let the browser's default paste run: the
           // textarea's `paste` event is xterm's paste path (bracketed paste).
           return false;
+        case "newline":
+          if (e.type === "keydown") {
+            term.input(NEWLINE_SEQUENCE);
+            e.preventDefault();
+          }
+          return false;
         default:
           return true;
       }
@@ -87,6 +94,19 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+
+    // A paste with an image and no text would paste nothing; send Alt+V's
+    // bytes instead so an agent CLI reads the image off the clipboard.
+    // Capture phase, ahead of xterm's own listener on its textarea.
+    const onPaste = (e: ClipboardEvent) => {
+      const data = e.clipboardData;
+      if (!data || data.getData("text/plain")) return;
+      if (![...data.items].some((item) => item.type.startsWith("image/"))) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      term.input(IMAGE_PASTE_SEQUENCE);
+    };
+    host.addEventListener("paste", onPaste, true);
 
     // GPU renderer; fall back to the DOM renderer if the context is lost.
     try {
@@ -103,7 +123,7 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
 
     let session: PtySession | null = null;
     let disposed = false;
-    const disposables: Array<() => void> = [];
+    const disposables: Array<() => void> = [() => host.removeEventListener("paste", onPaste, true)];
 
     // Wire input before spawning. ConPTY's conhost opens with a cursor-position
     // query (ESC [ 6 n) and stalls all output until the terminal answers it;

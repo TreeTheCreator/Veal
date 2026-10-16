@@ -26,6 +26,13 @@ describe("terminalKeyAction (plan-16)", () => {
     expect(terminalKeyAction(key({ key: "V", ctrlKey: true, shiftKey: true }), false)).toBe("paste");
   });
 
+  it("Shift+Enter and Ctrl+Enter send a new line; plain and Alt+Enter pass", () => {
+    expect(terminalKeyAction(key({ key: "Enter", shiftKey: true }), false)).toBe("newline");
+    expect(terminalKeyAction(key({ key: "Enter", ctrlKey: true }), true)).toBe("newline");
+    expect(terminalKeyAction(key({ key: "Enter" }), false)).toBe("pass");
+    expect(terminalKeyAction(key({ key: "Enter", altKey: true }), false)).toBe("pass");
+  });
+
   it("view shortcuts win, and agree with viewForShortcut", () => {
     const e = key({ key: "2", ctrlKey: true });
     expect(terminalKeyAction(e, true)).toBe("view");
