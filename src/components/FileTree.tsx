@@ -2,10 +2,12 @@
 // directory or opens a file; arrows move, → expands, ← collapses or goes to
 // the parent, Enter opens — all index arithmetic over the rows. Plan-09:
 // right-click for create / rename / delete, F2 renames, Delete removes, and
-// names are typed in an inline row.
+// names are typed in an inline row. A row an agent just wrote, and every
+// folder above it, carries the agent dot (files/activity.ts).
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { Icon } from "../Icon";
 import { validateName, stemLength } from "../files/names";
+import type { Lit } from "../files/activity";
 import type { TreeEdit } from "../files/store";
 import { parentIndex, pathKey, type Row } from "../files/tree";
 import { InlineInput } from "./InlineInput";
@@ -15,6 +17,8 @@ interface Props {
   open: string | null;
   /** Files with unsaved edits, keyed by pathKey. */
   dirty: ReadonlyMap<string, unknown>;
+  /** Rows an agent is working on, keyed by pathKey. */
+  agent: Lit;
   rootError: string | null;
   /** The inline edit in progress, if it belongs to this project. */
   edit: TreeEdit | null;
@@ -34,7 +38,7 @@ interface Props {
 const INDENT_PX = 16;
 
 export function FileTree({
-  rows, open, dirty, rootError, edit, onToggle, onOpen, onCommit, onCancelEdit, onContextMenu, onRename, onDelete, onCursor,
+  rows, open, dirty, agent, rootError, edit, onToggle, onOpen, onCommit, onCancelEdit, onContextMenu, onRename, onDelete, onCursor,
 }: Props) {
   const [cursor, setCursor] = useState(0);
   // The cursor row counts as "focused" only while focus is inside the tree —
@@ -137,6 +141,7 @@ export function FileTree({
         const isOpen = !isDir && openKey === key;
         const isDirty = !isDir && dirty.has(key);
         const renaming = renameKey === key;
+        const isAgent = agent.paths.has(key) || agent.dirs.has(key);
         const cls = ["node", isDir ? "dir" : "file", isDir && !row.expanded ? "collapsed" : "", isOpen ? "open-file" : ""]
           .filter(Boolean)
           .join(" ");
@@ -151,7 +156,7 @@ export function FileTree({
                 aria-expanded={isDir ? row.expanded : undefined}
                 aria-selected={isOpen}
                 tabIndex={i === cursor ? 0 : -1}
-                title={renaming ? undefined : isDirty ? `${row.path} — unsaved changes` : row.path}
+                title={renaming ? undefined : isDirty ? `${row.path} — unsaved changes` : isAgent ? `${row.path} — agent working here` : row.path}
                 draggable={false}
                 onClick={() => {
                   if (renaming) return;
@@ -169,6 +174,7 @@ export function FileTree({
                   <span className="nname">{row.name}</span>
                 )}
                 {isDirty && !renaming && <span className="dirty" aria-label="unsaved changes" />}
+                {isAgent && !renaming && <span className="agent-dot" aria-label="agent working here" />}
               </RowTag>
               {row.error && row.expanded && <div className="tree-error">{row.error}</div>}
             </div>

@@ -5,8 +5,9 @@
 import type { EditorState } from "@codemirror/state";
 import { create } from "zustand";
 import { fs, type EntryKind, type FileText } from "../fs";
-import { basename } from "../paths";
+import { basename, joinPath } from "../paths";
 import { useUi } from "../ui";
+import { useActivity } from "./activity";
 import { dropUnder, isUnder, rekeyProject } from "./rekey";
 import type { SavedFiles } from "./persist";
 import { flatten, pathKey, type DirState } from "./tree";
@@ -219,6 +220,8 @@ export const useFiles = create<FilesState>((set, get) => {
   };
 
   const toast = (msg: string) => useUi.getState().showToast(msg);
+  /** Our own write: its watcher event must not light the tree as agent activity. */
+  const own = (...paths: string[]) => useActivity.getState().markOwn(...paths);
 
   return {
     byProject: new Map(),
@@ -336,6 +339,7 @@ export const useFiles = create<FilesState>((set, get) => {
       const { crlf, bom, mtime } = p.file;
       patchFile(projectId, path, () => ({ saving: true }));
       try {
+        own(path);
         const w = await fs.write(path, text, { crlf, bom, expectedMtime: force ? null : mtime });
         patch(projectId, (q) => {
           const drafts = new Map(q.drafts);
@@ -403,6 +407,7 @@ export const useFiles = create<FilesState>((set, get) => {
 
     async create(projectId, dir, name, kind) {
       try {
+        own(joinPath(dir, name));
         const path = await fs.create(dir, name, kind);
         set({ edit: null });
         list(projectId, dir);
@@ -420,10 +425,11 @@ export const useFiles = create<FilesState>((set, get) => {
         return true;
       }
       try {
+        const parent = parentPath(path);
+        own(path, ...(parent ? [joinPath(parent, name)] : []));
         const to = await fs.rename(path, name);
         set({ edit: null });
         patch(projectId, (p) => rekeyProject(p, path, to));
-        const parent = parentPath(path);
         if (parent) list(projectId, parent);
         return true;
       } catch (e) {
@@ -434,6 +440,7 @@ export const useFiles = create<FilesState>((set, get) => {
 
     async remove(projectId, path) {
       try {
+        own(path);
         await fs.delete(path);
         patch(projectId, (p) => dropUnder(p, path));
         const parent = parentPath(path);

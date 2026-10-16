@@ -5,6 +5,7 @@
 // and the one modal (deleting unsaved edits).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EntryKind } from "../fs";
+import { lit, useActivity } from "../files/activity";
 import { selectProject, useFiles, type DirtyFile } from "../files/store";
 import { flatten, pathKey, type Row } from "../files/tree";
 import { parentPath } from "../files/watch";
@@ -68,6 +69,9 @@ export function FilesView({ visible }: { visible: boolean }) {
     () => (state ? flatten(state.root, state.dirs, state.expanded) : []),
     [state],
   );
+  // Rows an agent touched in the last few seconds, plus their folders.
+  const touches = useActivity((s) => (active ? s.byProject.get(active.id) : undefined));
+  const agentLit = useMemo(() => lit(touches, active?.path ?? "", Date.now()), [touches, active?.path]);
 
   if (!active) {
     return (
@@ -153,6 +157,7 @@ export function FilesView({ visible }: { visible: boolean }) {
           rows={rows}
           open={open}
           dirty={dirty}
+          agent={agentLit}
           rootError={rootError}
           edit={myEdit}
           onToggle={(p) => toggleDir(id, p)}

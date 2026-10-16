@@ -193,6 +193,7 @@ svg.i { flex: 0 0 auto; }
 .node svg { width: 14px; height: 14px; flex: 0 0 auto; }
 .node .nname { overflow: hidden; text-overflow: ellipsis; }
 .node .dirty { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--accent); margin-left: 2px; }
+.node .agent-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--agent); box-shadow: 0 0 0 3px var(--agent-soft); margin-left: auto; margin-right: 6px; }
 .tree-error { color: var(--agent); font-size: 11.5px; padding: 2px 8px 6px 25px; white-space: normal; word-break: break-all; }
 /* plan-09: inline name editing */
 .node.ghost { color: var(--text); cursor: default; }
