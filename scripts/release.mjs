@@ -5,7 +5,7 @@
 // The signing key is ~/.tauri/veal-updater.key unless
 // TAURI_SIGNING_PRIVATE_KEY is already set.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -38,12 +38,16 @@ if (!env.TAURI_SIGNING_PRIVATE_KEY) {
 // must not get one, or its spaced arguments (title, notes) are split.
 const run = (cmd, argv, shell = false) => execFileSync(cmd, argv, { stdio: "inherit", env, shell });
 
-console.log(`Building Veal ${version}…`);
-run("pnpm", ["tauri", "build"], process.platform === "win32");
-
 const dir = "src-tauri/target/release/bundle/nsis";
 const installer = `Veal_${version}_x64-setup.exe`;
 const sigPath = join(dir, `${installer}.sig`);
+// A .sig left by an earlier build of this version would pass the check below
+// and publish a signature that does not match the new installer.
+rmSync(sigPath, { force: true });
+
+console.log(`Building Veal ${version}…`);
+run("pnpm", ["tauri", "build"], process.platform === "win32");
+
 if (!existsSync(sigPath)) {
   console.error(`${sigPath} is missing; the build did not sign the installer.`);
   process.exit(1);

@@ -38,6 +38,9 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
   // agent runs, blue `shell` otherwise.
   const accent = agent ? "agent" : "shell";
   const hostRef = useRef<HTMLDivElement>(null);
+  // Read by the key handler, which is attached once per terminal.
+  const agentRef = useRef(agent);
+  agentRef.current = agent;
   const termRef = useRef<Terminal | null>(null);
   const [exitCode, setExitCode] = useState<number | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
@@ -63,8 +66,9 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
     // Let Ctrl+1/2/3 reach the window listener (view switching) instead of
     // the shell, Ctrl+C over a selection copy it rather than send ^C
     // (plan-16), Ctrl+V paste rather than send ^V, and Shift/Ctrl+Enter send
-    // Alt+Enter's bytes (a new line in agent CLIs). Returning false keeps the
-    // key from xterm entirely.
+    // Alt+Enter's bytes (a new line in agent CLIs) while an agent is detected;
+    // a plain shell has no binding for Alt+Enter, so there they stay a CR.
+    // Returning false keeps the key from xterm entirely.
     term.attachCustomKeyEventHandler((e) => {
       switch (terminalKeyAction(e, term.hasSelection())) {
         case "view":
@@ -82,6 +86,7 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
           // textarea's `paste` event is xterm's paste path (bracketed paste).
           return false;
         case "newline":
+          if (!agentRef.current) return true;
           if (e.type === "keydown") {
             term.input(NEWLINE_SEQUENCE);
             e.preventDefault();

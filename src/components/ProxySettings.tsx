@@ -146,7 +146,7 @@ export function ProxySettings() {
             <dt>Host</dt>
             <dd className="mono">
               {d.host ?? "none"}
-              {d.rawProxy?.toLowerCase().includes("localhost") && " (from localhost)"}
+              {d.rawProxy && FROM_LOCALHOST.test(d.rawProxy) && " (from localhost)"}
             </dd>
             <dt>Answered</dt>
             <dd className="mono">{d.answered ?? (d.lookup === "static" && resolved.url === null ? "nothing" : "not checked")}</dd>
@@ -165,6 +165,9 @@ export function ProxySettings() {
     </>
   );
 }
+
+/** `localhost` as a host in Windows' proxy string, not a substring of one. */
+const FROM_LOCALHOST = /(^|[=;/\s])localhost:/i;
 
 const LOOKUP_LABEL: Record<NonNullable<ProxyResolved["diag"]["lookup"]>, string> = {
   static: "fixed proxy",
