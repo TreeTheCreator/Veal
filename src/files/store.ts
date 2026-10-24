@@ -199,7 +199,13 @@ export const useFiles = create<FilesState>((set, get) => {
           // Unchanged (or our own write): keep the editor as it is.
         } else {
           // Coming back to a dirty file: the editor restores the stashed draft over this.
-          patch(projectId, () => ({ file: { ...loaded(f), conflict } as FileState }));
+          // A file rewritten as non-UTF-8 while in Edit mode leaves Edit mode (plan-16).
+          patch(projectId, (q) => {
+            if (!f.lossy || !q.editing.has(key)) return { file: { ...loaded(f), conflict } as FileState };
+            const editing = new Set(q.editing);
+            editing.delete(key);
+            return { file: { ...loaded(f), conflict } as FileState, editing };
+          });
         }
       },
       (e) => {
@@ -336,6 +342,8 @@ export const useFiles = create<FilesState>((set, get) => {
       const key = pathKey(path);
       const p = get().byProject.get(projectId);
       if (!p || pathKey(p.open ?? "") !== key || p.file?.status !== "loaded") return false;
+      // Never write a lossy rendering back over the original bytes (plan-16).
+      if (p.file.lossy) return false;
       const { crlf, bom, mtime } = p.file;
       patchFile(projectId, path, () => ({ saving: true }));
       try {

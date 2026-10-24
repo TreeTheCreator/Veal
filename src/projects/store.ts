@@ -56,6 +56,13 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   setActive(id) {
     set({ activeId: id });
     db.settingsSet("active_project", String(id)).catch((e) => console.warn("settings_set", e));
+    // A root renamed away or back since the last look (plan-16).
+    const project = get().projects.find((p) => p.id === id);
+    if (project) {
+      db.pathKind(project.path)
+        .then((kind) => get().markMissing(id, kind !== "dir"))
+        .catch((e) => console.warn("path_kind", e));
+    }
   },
 
   markMissing(id, missing) {

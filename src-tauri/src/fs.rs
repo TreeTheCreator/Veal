@@ -270,7 +270,9 @@ pub fn rename(path: &Path, name: &str) -> Result<PathBuf, String> {
         .file_name()
         .map(|f| f.to_string_lossy().to_lowercase() == name.to_lowercase())
         .unwrap_or(false);
-    if target.exists() {
+    // `symlink_metadata`, not `exists`: a dangling link is still an entry
+    // that the rename would replace.
+    if std::fs::symlink_metadata(&target).is_ok() {
         let same_file = same_entry
             && matches!(
                 (std::fs::canonicalize(path), std::fs::canonicalize(&target)),
@@ -287,7 +289,8 @@ pub fn rename(path: &Path, name: &str) -> Result<PathBuf, String> {
 /// Moves `path` to the Recycle Bin (decision 1). Not unit-tested — it would
 /// fill the developer's bin on every `cargo test`; acceptance covers it.
 pub fn delete(path: &Path) -> Result<(), String> {
-    if !path.exists() {
+    // A dangling junction or symlink is still an entry to remove (plan-16).
+    if std::fs::symlink_metadata(path).is_err() {
         return Err("not found".into());
     }
     trash::delete(path).map_err(|e| format!("delete {}: {e}", path.display()))

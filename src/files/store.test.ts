@@ -202,6 +202,22 @@ describe("editing and drafts", () => {
     expect(s.dirtyFiles()).toEqual([]);
   });
 
+  it("a file rewritten as non-UTF-8 while in edit mode leaves edit mode and cannot be saved", async () => {
+    const s = useFiles.getState();
+    s.ensure(1, A);
+    s.openFile(1, F);
+    await flush();
+    s.setEditing(1, F, true);
+    expect(project().editing.has(key)).toBe(true);
+    read.mockImplementation(async () => ({ text: "caf�\n", size: 5, mtime: 2000, bom: false, lossy: true }));
+    s.refresh(1);
+    await flush();
+    expect(project().file).toMatchObject({ status: "loaded", lossy: true });
+    expect(project().editing.has(key)).toBe(false);
+    expect(await s.save(1, F, "café\n")).toBe(false);
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it("a re-read with the same mtime keeps the draft and text; a newer one flags a conflict", async () => {
     await openAndEdit();
     const gen = loadedFile().gen;
