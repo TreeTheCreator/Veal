@@ -1,19 +1,19 @@
-// Gate harness for plan-19 section 0. Throwaway.
+// Gate harness for plan-19 section 0.
 //   gate pty <cols> <rows> <cwd> <program> [args]   stdin: W<b64> | R<c> <r> ; stdout: D<b64> | X<code>
 //   gate snap <candidate> <events.bin> <cuts.txt> <outdir>
 //   gate bench <events.bin> <repeat>
-use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::{Dimensions, Grid};
+use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Processor};
+use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::vte::ansi::Processor;
 use base64::Engine;
 use std::io::{BufRead, Read, Write};
 use std::sync::{Arc, Mutex};
+use veal_core::session::{Session, SCROLLBACK};
 
 const B64: base64::engine::general_purpose::GeneralPurpose = base64::engine::general_purpose::STANDARD;
-const SCROLLBACK: usize = 5000;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -109,125 +109,7 @@ fn read_events(path: &str) -> (u16, u16, Vec<Ev>) {
     (cols, rows, v)
 }
 
-// ---- the partial-sequence tracker: bytes the parser is holding at a cut ----
-
-#[derive(Default)]
-struct Tail {
-    state: u8, // 0 ground, 1 esc, 2 csi, 3 string, 4 string-esc, 5 utf8
-    need: u8,
-    bytes: Vec<u8>,
-}
-impl Tail {
-    fn feed(&mut self, data: &[u8]) {
-        for &c in data {
-            self.byte(c);
-        }
-    }
-    fn byte(&mut self, c: u8) {
-        match self.state {
-            0 => {
-                if c == 0x1b {
-                    self.bytes.clear();
-                    self.bytes.push(c);
-                    self.state = 1;
-                } else if c >= 0xc2 && c < 0xf5 {
-                    self.bytes.clear();
-                    self.bytes.push(c);
-                    self.need = if c < 0xe0 { 1 } else if c < 0xf0 { 2 } else { 3 };
-                    self.state = 5;
-                }
-            }
-            5 => {
-                if c & 0xc0 == 0x80 {
-                    self.bytes.push(c);
-                    self.need -= 1;
-                    if self.need == 0 {
-                        self.done();
-                    }
-                } else {
-                    self.done();
-                    self.byte(c);
-                }
-            }
-            1 => {
-                self.bytes.push(c);
-                match c {
-                    b'[' => self.state = 2,
-                    b']' | b'P' | b'X' | b'^' | b'_' => self.state = 3,
-                    0x20..=0x2f => {} // intermediates: stay, need a final
-                    _ => self.done(),
-                }
-            }
-            2 => {
-                if c == 0x1b {
-                    self.bytes.clear();
-                    self.bytes.push(c);
-                    self.state = 1;
-                    return;
-                }
-                self.bytes.push(c);
-                if (0x40..=0x7e).contains(&c) || c == 0x18 || c == 0x1a {
-                    self.done();
-                }
-            }
-            3 => {
-                self.bytes.push(c);
-                if c == 0x07 || c == 0x18 || c == 0x1a {
-                    self.done();
-                } else if c == 0x1b {
-                    self.state = 4;
-                }
-            }
-            4 => {
-                self.bytes.push(c);
-                if c == b'\\' {
-                    self.done();
-                } else {
-                    self.state = 3;
-                }
-            }
-            _ => unreachable!(),
-        }
-    }
-    fn done(&mut self) {
-        self.state = 0;
-        self.bytes.clear();
-    }
-}
-
 // ---- candidates ----
-
-#[derive(Clone, Default)]
-struct Listener(Arc<Mutex<Shared>>);
-#[derive(Default)]
-struct Shared {
-    title: Option<String>,
-    replies: usize,
-}
-impl EventListener for Listener {
-    fn send_event(&self, e: Event) {
-        let mut s = self.0.lock().unwrap();
-        match e {
-            Event::Title(t) => s.title = Some(t),
-            Event::ResetTitle => s.title = None,
-            Event::PtyWrite(_) | Event::ColorRequest(..) | Event::TextAreaSizeRequest(_) => s.replies += 1,
-            _ => {}
-        }
-    }
-}
-
-struct Size(usize, usize);
-impl Dimensions for Size {
-    fn total_lines(&self) -> usize {
-        self.1
-    }
-    fn screen_lines(&self) -> usize {
-        self.1
-    }
-    fn columns(&self) -> usize {
-        self.0
-    }
-}
 
 trait Candidate {
     fn feed(&mut self, b: &[u8]);
@@ -235,237 +117,21 @@ trait Candidate {
     fn snapshot(&mut self) -> Vec<u8>;
 }
 
-struct Alac {
-    term: Term<Listener>,
-    proc: Processor,
-    l: Listener,
-    tail: Tail,
-    use_tail: bool,
-}
-impl Alac {
-    fn new(c: u16, r: u16, use_tail: bool) -> Self {
-        let l = Listener::default();
-        let cfg = Config { scrolling_history: SCROLLBACK, ..Config::default() };
-        Alac { term: Term::new(cfg, &Size(c as usize, r as usize), l.clone()), proc: Processor::new(), l, tail: Tail::default(), use_tail }
-    }
-}
-
-fn color(out: &mut String, c: Color, base: u32) {
-    use std::fmt::Write;
-    match c {
-        Color::Named(NamedColor::Foreground) | Color::Named(NamedColor::Background) | Color::Named(NamedColor::Cursor) => {}
-        Color::Named(n) => {
-            let i = n as u32;
-            if i < 8 {
-                write!(out, ";{}", base + i).unwrap();
-            } else if i < 16 {
-                write!(out, ";{}", base + 60 + i - 8).unwrap();
-            }
-        }
-        Color::Indexed(i) => write!(out, ";{};5;{}", base + 8, i).unwrap(),
-        Color::Spec(rgb) => write!(out, ";{};2;{};{};{}", base + 8, rgb.r, rgb.g, rgb.b).unwrap(),
-    }
-}
-
-type PenKey = (Color, Color, u16, Option<Color>);
-fn sgr(c: &Cell) -> (PenKey, String) {
-    use std::fmt::Write;
-    let f = c.flags;
-    let mut s = String::from("\x1b[0");
-    if f.contains(Flags::BOLD) { s.push_str(";1"); }
-    if f.contains(Flags::DIM) { s.push_str(";2"); }
-    if f.contains(Flags::ITALIC) { s.push_str(";3"); }
-    if f.contains(Flags::UNDERCURL) { s.push_str(";4:3"); }
-    else if f.contains(Flags::DOTTED_UNDERLINE) { s.push_str(";4:4"); }
-    else if f.contains(Flags::DASHED_UNDERLINE) { s.push_str(";4:5"); }
-    else if f.contains(Flags::DOUBLE_UNDERLINE) { s.push_str(";4:2"); }
-    else if f.contains(Flags::UNDERLINE) { s.push_str(";4"); }
-    if f.contains(Flags::INVERSE) { s.push_str(";7"); }
-    if f.contains(Flags::HIDDEN) { s.push_str(";8"); }
-    if f.contains(Flags::STRIKEOUT) { s.push_str(";9"); }
-    color(&mut s, c.fg, 30);
-    color(&mut s, c.bg, 40);
-    let uc = c.underline_color();
-    if let Some(u) = uc {
-        match u {
-            Color::Indexed(i) => write!(s, ";58;5;{i}").unwrap(),
-            Color::Spec(r) => write!(s, ";58;2;{};{};{}", r.r, r.g, r.b).unwrap(),
-            _ => {}
-        }
-    }
-    s.push('m');
-    let visible = f & !(Flags::WRAPLINE | Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER);
-    ((c.fg, c.bg, visible.bits(), uc), s)
-}
-
-fn is_blank(c: &Cell) -> bool {
-    let visible = c.flags & !(Flags::WRAPLINE);
-    c.c == ' ' && visible.is_empty() && c.bg == Color::Named(NamedColor::Background) && c.zerowidth().is_none() && c.hyperlink().is_none()
-}
-
-/// Every line of a grid from `first` to the bottom, as bytes that redraw it.
-fn write_grid(out: &mut Vec<u8>, g: &Grid<Cell>, first: i32) {
-    let cols = g.columns();
-    let last_line = g.screen_lines() as i32 - 1;
-    let mut pen: Option<PenKey> = None;
-    let mut link: Option<String> = None;
-    let mut buf = [0u8; 4];
-    for li in first..=last_line {
-        let row = &g[Line(li)];
-        let wrapped = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
-        let end = if wrapped {
-            cols
-        } else {
-            (0..cols).rev().find(|&c| !is_blank(&row[Column(c)])).map_or(0, |c| c + 1)
-        };
-        let mut col = 0;
-        while col < end {
-            let cell = &row[Column(col)];
-            if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
-                col += 1;
-                continue;
-            }
-            let (key, code) = sgr(cell);
-            if pen != Some(key) {
-                out.extend_from_slice(code.as_bytes());
-                pen = Some(key);
-            }
-            let uri = cell.hyperlink().map(|h| h.uri().to_string());
-            if uri != link {
-                out.extend_from_slice(format!("\x1b]8;;{}\x1b\\", uri.as_deref().unwrap_or("")).as_bytes());
-                link = uri;
-            }
-            out.extend_from_slice(cell.c.encode_utf8(&mut buf).as_bytes());
-            if let Some(z) = cell.zerowidth() {
-                for &ch in z {
-                    out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-                }
-            }
-            let width = if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
-            // Width tables can disagree between the two emulators; a CHA after a
-            // non-ASCII glyph stops one disagreement shifting the rest of the row.
-            if !cell.c.is_ascii() && col + width < cols {
-                out.extend_from_slice(format!("\x1b[{}G", col + width + 1).as_bytes());
-            }
-            col += width;
-        }
-        if link.is_some() {
-            out.extend_from_slice(b"\x1b]8;;\x1b\\");
-            link = None;
-        }
-        if li < last_line && !wrapped {
-            if pen.is_some() {
-                out.extend_from_slice(b"\x1b[0m");
-                pen = None;
-            }
-            out.extend_from_slice(b"\r\n");
-        }
-    }
-    if pen.is_some() {
-        out.extend_from_slice(b"\x1b[0m");
-    }
-}
-
-fn place_cursor(out: &mut Vec<u8>, g: &Grid<Cell>) {
-    let p = g.cursor.point;
-    let (line, col) = (p.line.0 + 1, p.column.0 + 1);
-    out.extend_from_slice(format!("\x1b[{line};{col}H").as_bytes());
-    // Pending wrap: the cursor sits past the last column until the next glyph.
-    // Only re-printing the last cell recreates that state.
-    if g.cursor.input_needs_wrap {
-        let c = &g[p.line][p.column];
-        let (_, code) = sgr(c);
-        out.extend_from_slice(code.as_bytes());
-        let mut b = [0u8; 4];
-        out.extend_from_slice(c.c.encode_utf8(&mut b).as_bytes());
-    }
-}
-
-impl Candidate for Alac {
+/// What ships: `Session` from veal-core. A snapshot is what a client's first take
+/// gives it, so this exercises the real attach path as well as the serializer.
+struct Shipped(Session);
+impl Candidate for Shipped {
     fn feed(&mut self, b: &[u8]) {
-        self.proc.advance(&mut self.term, b);
-        if self.use_tail {
-            self.tail.feed(b);
-        }
+        self.0.feed(b);
     }
     fn resize(&mut self, c: u16, r: u16) {
-        self.term.resize(Size(c as usize, r as usize));
+        self.0.resize(c, r);
     }
     fn snapshot(&mut self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(256 * 1024);
-        out.extend_from_slice(b"\x1bc\x1b[?25h");
-        let mode = *self.term.mode();
-        let alt = mode.contains(TermMode::ALT_SCREEN);
-        // The hidden main grid is private. Swapping is the only way to reach it;
-        // swapping back wipes the alt grid, so a clone puts it back afterwards.
-        let saved_alt = if alt { Some(self.term.grid().clone()) } else { None };
-        if alt {
-            self.term.swap_alt();
-        }
-        {
-            let g = self.term.grid();
-            write_grid(&mut out, g, -(g.history_size() as i32));
-            let s = g.saved_cursor.point;
-            out.extend_from_slice(format!("\x1b[{};{}H\x1b7", s.line.0 + 1, s.column.0 + 1).as_bytes());
-            place_cursor(&mut out, g);
-        }
-        if let Some(a) = saved_alt {
-            let main_saved = self.term.grid().saved_cursor.clone();
-            self.term.swap_alt();
-            let (inactive_cursor, _) = (a.cursor.clone(), ());
-            *self.term.grid_mut() = a;
-            self.term.grid_mut().cursor = inactive_cursor;
-            let _ = main_saved;
-            out.extend_from_slice(b"\x1b[?1049h\x1b[H");
-            write_grid(&mut out, self.term.grid(), 0);
-            place_cursor(&mut out, self.term.grid());
-        }
-        // Current pen.
-        let tmpl = self.term.grid().cursor.template.clone();
-        out.extend_from_slice(sgr(&tmpl).1.as_bytes());
-        // Modes, last: wrap must be on while the rows above are drawn.
-        let mut m = |flag: TermMode, seq: &str| {
-            if mode.contains(flag) {
-                out.extend_from_slice(seq.as_bytes());
-            }
-        };
-        m(TermMode::APP_CURSOR, "\x1b[?1h");
-        m(TermMode::APP_KEYPAD, "\x1b=");
-        m(TermMode::MOUSE_REPORT_CLICK, "\x1b[?1000h");
-        m(TermMode::MOUSE_DRAG, "\x1b[?1002h");
-        m(TermMode::MOUSE_MOTION, "\x1b[?1003h");
-        m(TermMode::UTF8_MOUSE, "\x1b[?1005h");
-        m(TermMode::SGR_MOUSE, "\x1b[?1006h");
-        m(TermMode::BRACKETED_PASTE, "\x1b[?2004h");
-        m(TermMode::FOCUS_IN_OUT, "\x1b[?1004h");
-        m(TermMode::INSERT, "\x1b[4h");
-        m(TermMode::LINE_FEED_NEW_LINE, "\x1b[20h");
-        if !mode.contains(TermMode::LINE_WRAP) {
-            out.extend_from_slice(b"\x1b[?7l");
-        }
-        if !mode.contains(TermMode::SHOW_CURSOR) {
-            out.extend_from_slice(b"\x1b[?25l");
-        }
-        let cs = self.term.cursor_style();
-        let code = match (cs.shape, cs.blinking) {
-            (CursorShape::Block, true) => Some(1),
-            (CursorShape::Block, false) => None,
-            (CursorShape::Underline, true) => Some(3),
-            (CursorShape::Underline, false) => Some(4),
-            (CursorShape::Beam, true) => Some(5),
-            (CursorShape::Beam, false) => Some(6),
-            _ => None,
-        };
-        if let Some(c) = code {
-            out.extend_from_slice(format!("\x1b[{c} q").as_bytes());
-        }
-        if let Some(t) = self.l.0.lock().unwrap().title.clone() {
-            out.extend_from_slice(format!("\x1b]0;{t}\x07").as_bytes());
-        }
-        if self.use_tail {
-            out.extend_from_slice(&self.tail.bytes);
-        }
-        out
+        let client = self.0.attach(false, Arc::new(|| {})).client;
+        let bytes = self.0.take(client).bytes;
+        self.0.detach(client);
+        bytes
     }
 }
 
@@ -511,8 +177,7 @@ impl Candidate for Vt {
 
 fn candidate(name: &str, c: u16, r: u16) -> Box<dyn Candidate> {
     match name {
-        "alacritty" => Box::new(Alac::new(c, r, false)),
-        "alacritty-tail" => Box::new(Alac::new(c, r, true)),
+        "alacritty-tail" => Box::new(Shipped(Session::new(c, r))),
         "vt100" => Box::new(Vt { p: vt100::Parser::new(std::num::NonZeroU16::new(r).unwrap(), std::num::NonZeroU16::new(c).unwrap(), SCROLLBACK) }),
         n => panic!("unknown candidate {n}"),
     }
@@ -582,7 +247,7 @@ fn bench_mode(a: &[String]) {
     let data: Vec<&[u8]> = evs.iter().filter_map(|e| if let Ev::Data(d) = e { Some(d.as_slice()) } else { None }).collect();
     let total: usize = data.iter().map(|d| d.len()).sum();
     let before = rss();
-    let mut c = Alac::new(cols, rows, true);
+    let mut c = Shipped(Session::new(cols, rows));
     let t = std::time::Instant::now();
     for _ in 0..repeat {
         for d in &data {
@@ -594,10 +259,9 @@ fn bench_mode(a: &[String]) {
     let t2 = std::time::Instant::now();
     let snap = c.snapshot();
     let snap_ms = t2.elapsed().as_secs_f64() * 1000.0;
-    let hist = c.term.grid().history_size();
     let mbps = (total * repeat) as f64 / 1e6 / secs;
     println!(
-        "{{\"cols\":{cols},\"rows\":{rows},\"mb\":{:.1},\"secs\":{secs:.3},\"mbPerSec\":{mbps:.1},\"corePctAt195KBs\":{:.2},\"history\":{hist},\"rssDeltaMB\":{:.1},\"snapshotMs\":{snap_ms:.1},\"snapshotKB\":{}}}",
+        "{{\"cols\":{cols},\"rows\":{rows},\"mb\":{:.1},\"secs\":{secs:.3},\"mbPerSec\":{mbps:.1},\"corePctAt195KBs\":{:.2},\"rssDeltaMB\":{:.1},\"snapshotMs\":{snap_ms:.1},\"snapshotKB\":{}}}",
         (total * repeat) as f64 / 1e6,
         0.195 / mbps * 100.0,
         (after.saturating_sub(before)) as f64 / 1e6,
@@ -606,17 +270,32 @@ fn bench_mode(a: &[String]) {
 }
 
 
+struct Size(usize, usize);
+impl Dimensions for Size {
+    fn total_lines(&self) -> usize {
+        self.1
+    }
+    fn screen_lines(&self) -> usize {
+        self.1
+    }
+    fn columns(&self) -> usize {
+        self.0
+    }
+}
+
 // The emulator's own view of its grid, with no serializer involved: logical lines, one per row of output.
 fn dump_mode(a: &[String]) {
     let (cols, rows, evs) = read_events(&a[0]);
-    let mut c = Alac::new(cols, rows, false);
+    let config = Config { scrolling_history: SCROLLBACK, ..Config::default() };
+    let mut term = Term::new(config, &Size(cols as usize, rows as usize), VoidListener);
+    let mut parser: Processor = Processor::new();
     for e in &evs {
         match e {
-            Ev::Data(d) => c.feed(d),
-            Ev::Resize(cc, r) => c.resize(*cc, *r),
+            Ev::Data(d) => parser.advance(&mut term, d),
+            Ev::Resize(cc, r) => term.resize(Size(*cc as usize, *r as usize)),
         }
     }
-    let g = c.term.grid();
+    let g = term.grid();
     let n = g.columns();
     let mut cur = String::new();
     for li in -(g.history_size() as i32)..g.screen_lines() as i32 {

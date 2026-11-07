@@ -2,7 +2,7 @@
 // as xterm is in Veal, so programs see the same answers they would in a pane.
 // usage: node record.mjs <scenario>
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import pkg from "@xterm/headless";
@@ -113,9 +113,20 @@ const scenarios = {
   async claude() { await claudeRun(false); },
   // Real agent with resizes during its output.
   async "claude-resize"() { await claudeRun(true); },
+  // Real agent over several turns of read-only tool use, as the gate's short runs were not.
+  async "claude-long"() {
+    cpSync(here, join(work, "sample"), { recursive: true, filter: (p) => !p.includes("node_modules") && !p.endsWith("package-lock.json") });
+    await claudeRun(false, [
+      "Using only your Glob and Read tools, read every .mjs file under sample/ one at a time, then describe each one in two lines.",
+      "Using only your Grep tool, find every use of process.argv under sample/ and show the matches in a table.",
+      "Using only your Read tool, read sample/record.mjs again, then write a numbered list of 40 one-line observations about it.",
+    ]);
+  },
 };
 
-async function claudeRun(doResize) {
+const SHORT_PROMPT = "Without using any tools, write a numbered list of 45 one-line facts about terminal emulators, then stop.";
+
+async function claudeRun(doResize, prompts = [SHORT_PROMPT]) {
   await idle(1500);
   send("claude\r");
   const ready = (s) => /trust|\? for shortcuts|Try "|bypass|Welcome|shift\+tab/i.test(s);
@@ -126,16 +137,18 @@ async function claudeRun(doResize) {
   await sleep(1500);
   { const b = term.buffer.active; const last = b.getLine(b.baseY + b.cursorY)?.translateToString(true) ?? "";
     if (/^PS /.test(last)) { console.log("ABORT: claude is not running, not typing the prompt"); child.kill(); process.exit(2); } }
-  await type("Without using any tools, write a numbered list of 45 one-line facts about terminal emulators, then stop.");
-  await sleep(300);
-  send("\r");
-  await sleep(5000);
-  if (doResize) {
-    const steps = [[100, 30], [140, 40], [80, 24], [120, 30]];
-    for (const [c, r] of steps) { await sleep(5000); resize(c, r); }
+  for (const prompt of prompts) {
+    await type(prompt);
+    await sleep(300);
+    send("\r");
+    await sleep(5000);
+    if (doResize) {
+      const steps = [[100, 30], [140, 40], [80, 24], [120, 30]];
+      for (const [c, r] of steps) { await sleep(5000); resize(c, r); }
+    }
+    await idle(9000, 180000);
+    console.log("--- answered\n" + screen());
   }
-  await idle(9000, 180000);
-  console.log("--- answered\n" + screen());
   await type("/exit");
   await sleep(300);
   send("\r");

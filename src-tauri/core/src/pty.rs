@@ -1,109 +1,34 @@
 //! PTY plumbing: one real shell process per pane, driven by portable-pty.
 //!
-//! Design: no async runtime. portable-pty is blocking, so each pane owns two
-//! `std::thread`s — a reader that pumps raw bytes to the frontend and a waiter
-//! that blocks on `child.wait()`. The waiter is what tears the pane down: on
-//! Windows the ConPTY reader only sees EOF once the pseudoconsole is closed,
-//! which happens when we drop the master, so "child exited" has to be observed
-//! independently of the byte stream.
+//! Design: no async runtime. portable-pty is blocking, so each pane owns
+//! `std::thread`s: a reader that pumps raw bytes into its `Session`, a waiter
+//! that blocks on `child.wait()`, and one that writes query answers. The waiter
+//! is what tears the pane down: on Windows the ConPTY reader only sees EOF once
+//! the pseudoconsole is closed, which happens when we drop the master, so "child
+//! exited" has to be observed independently of the byte stream.
 //!
-//! Output is pulled, not pushed (plan-15): the reader appends to a per-pane
-//! `Outbox`, signals the frontend once per idle-to-busy edge, and the
-//! frontend drains with `take` at its own pace. Above `OUTBOX_CAP` the reader
-//! blocks, which blocks the child: backpressure, as a terminal that is not
-//! being read applies it.
+//! Output is pulled, not pushed (plan-15): the reader feeds the session, which
+//! signals a client once per idle-to-busy edge, and the client drains with
+//! `take` at its own pace. Reading never blocks (plan-19): the child is limited
+//! only by the emulator, and a client that falls behind gets a snapshot.
 //!
 //! The registry is Tauri-agnostic (callbacks instead of channels/events) so it
 //! can be exercised from `cargo test` without a webview.
 
+use crate::session::{Attached, ClientId, Notify, Session};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 /// Bytes per `read()` on the PTY master.
 const READ_BUF: usize = 16 * 1024;
 
-/// Unfetched bytes a pane may hold before its reader stops reading. An agent
-/// redraw is tens of KB; this is seconds of the heaviest flood.
-pub const OUTBOX_CAP: usize = 1024 * 1024;
-
-/// Bytes read from the PTY that the frontend has not fetched yet.
-#[derive(Default)]
-struct Outbox {
-    buf: Vec<u8>,
-    /// A data-ready signal is outstanding: the frontend will drain, so no
-    /// further signal is needed until it has.
-    notified: bool,
-    /// The reader hit EOF; nothing more will ever be appended.
-    eof: bool,
-}
-
-/// One pane's outbox plus the flags that release a reader waiting at the cap.
-#[derive(Default)]
-struct Shared {
-    out: Mutex<Outbox>,
-    drained: Condvar,
-    /// The frontend gave the pane up (`kill`): discard, never block.
-    closed: AtomicBool,
-    /// The child exited: the waiter must not be held up by a full outbox.
-    exited: AtomicBool,
-}
-
-impl Shared {
-    /// Append `bytes` unless the pane is closed; block while the outbox is
-    /// full and the child is alive. Returns whether the frontend needs a
-    /// data-ready signal.
-    fn push(&self, bytes: &[u8]) -> bool {
-        if self.closed.load(Ordering::Relaxed) {
-            return false;
-        }
-        let mut o = self.out.lock().unwrap_or_else(|p| p.into_inner());
-        while o.buf.len() >= OUTBOX_CAP
-            && !self.exited.load(Ordering::Relaxed)
-            && !self.closed.load(Ordering::Relaxed)
-        {
-            o = self.drained.wait(o).unwrap_or_else(|p| p.into_inner());
-        }
-        // Woken by close or exit with the outbox still full: drop the bytes.
-        if self.closed.load(Ordering::Relaxed) || o.buf.len() >= OUTBOX_CAP {
-            return false;
-        }
-        o.buf.extend_from_slice(bytes);
-        let signal = !o.notified;
-        o.notified = true;
-        signal
-    }
-
-    /// Hand the frontend everything so far. Clears `notified` under the same
-    /// lock `push` sets it, so an append after this take always signals.
-    /// Returns `(bytes, finished)`; finished means EOF was reached.
-    fn take(&self) -> (Vec<u8>, bool) {
-        let mut o = self.out.lock().unwrap_or_else(|p| p.into_inner());
-        let bytes = std::mem::take(&mut o.buf);
-        o.notified = false;
-        let finished = o.eof;
-        drop(o);
-        self.drained.notify_all();
-        (bytes, finished)
-    }
-
-    fn close(&self) {
-        self.closed.store(true, Ordering::Relaxed);
-        self.drained.notify_all();
-    }
-
-    fn exit(&self) {
-        self.exited.store(true, Ordering::Relaxed);
-        self.drained.notify_all();
-    }
-
-    fn set_eof(&self) {
-        self.out.lock().unwrap_or_else(|p| p.into_inner()).eof = true;
-    }
-}
+/// The client `spawn_with_env` attaches before the shell starts, the one
+/// `take` reads for. It answers queries, as xterm always has.
+const FIRST_CLIENT: ClientId = 0;
 
 pub struct SpawnOptions {
     pub cwd: String,
@@ -121,17 +46,17 @@ struct PtyHandle {
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// The shell's pid; agent detection walks its descendants.
     pid: Option<u32>,
-    shared: Arc<Shared>,
+    session: Arc<Session>,
 }
 
 #[derive(Default)]
 pub struct PtyRegistry {
     next_id: AtomicU32,
     panes: Mutex<HashMap<u32, PtyHandle>>,
-    /// Outboxes outlive their handles: a shell that exits at once still has
-    /// output the frontend has not fetched. An entry leaves when the
-    /// frontend has taken everything after EOF, or when it kills the pane.
-    outboxes: Mutex<HashMap<u32, Arc<Shared>>>,
+    /// Sessions outlive their handles: a shell that exits at once still has
+    /// output nobody has fetched. An entry leaves when its last client has
+    /// taken everything after EOF, or when it is killed or forgotten.
+    sessions: Mutex<HashMap<u32, Arc<Session>>>,
 }
 
 fn no_pty(id: u32) -> String {
@@ -189,24 +114,45 @@ impl PtyRegistry {
     pub fn spawn(
         self: &Arc<Self>,
         opts: SpawnOptions,
-        on_data_ready: impl FnMut(u32) + Send + 'static,
+        on_data_ready: impl Fn(u32) + Send + Sync + 'static,
         on_exit: impl FnOnce(u32, Option<i32>) + Send + 'static,
     ) -> Result<u32, String> {
         self.spawn_with_env(opts, Vec::new(), on_data_ready, on_exit)
     }
 
-    /// Spawn a shell. `on_data_ready` runs on the reader thread when the
-    /// outbox goes from empty to non-empty (the frontend then `take`s until it
-    /// is empty again); `on_exit` runs exactly once, after the handle has been
-    /// removed from the registry, with the pane id and exit code (`None` if it
-    /// could not be read).
+    /// Spawn a shell with a client attached from its first byte. `on_data_ready`
+    /// runs when that client's queue goes from empty to non-empty (it then
+    /// `take`s until empty); `on_exit` runs exactly once, after the handle has
+    /// been removed from the registry, with the pane id and exit code (`None`
+    /// if it could not be read).
     /// `env` is set on top of the inherited environment: the proxy
     /// variables `pty_spawn` resolved from the proxy mode (plan-18).
     pub fn spawn_with_env(
         self: &Arc<Self>,
         opts: SpawnOptions,
         env: Vec<(String, String)>,
-        mut on_data_ready: impl FnMut(u32) + Send + 'static,
+        on_data_ready: impl Fn(u32) + Send + Sync + 'static,
+        on_exit: impl FnOnce(u32, Option<i32>) + Send + 'static,
+    ) -> Result<u32, String> {
+        self.start(opts, env, Some(Box::new(on_data_ready)), on_exit)
+    }
+
+    /// Spawn a shell with nobody attached: the session answers its queries
+    /// until a client attaches.
+    pub fn spawn_detached(
+        self: &Arc<Self>,
+        opts: SpawnOptions,
+        env: Vec<(String, String)>,
+        on_exit: impl FnOnce(u32, Option<i32>) + Send + 'static,
+    ) -> Result<u32, String> {
+        self.start(opts, env, None, on_exit)
+    }
+
+    fn start(
+        self: &Arc<Self>,
+        opts: SpawnOptions,
+        env: Vec<(String, String)>,
+        first_client: Option<Box<dyn Fn(u32) + Send + Sync>>,
         on_exit: impl FnOnce(u32, Option<i32>) + Send + 'static,
     ) -> Result<u32, String> {
         // Windows shells silently fall back to the profile directory when the
@@ -241,27 +187,50 @@ impl PtyRegistry {
         drop(pair.slave);
 
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        let writer = Arc::new(Mutex::new(pair.master.take_writer().map_err(|e| e.to_string())?));
         let killer = child.clone_killer();
         let pid = child.process_id();
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
-        let shared = Arc::new(Shared::default());
-        self.outboxes.lock().unwrap().insert(id, Arc::clone(&shared));
+        let session = Arc::new(Session::new(opts.cols, opts.rows));
+        if let Some(notify) = first_client {
+            session.first_client(Arc::new(move || notify(id)));
+        }
+        self.sessions.lock().unwrap().insert(id, Arc::clone(&session));
+        // Holds the writer only weakly, so the handle still decides when it closes.
+        let reply_writer = Arc::downgrade(&writer);
         self.panes.lock().unwrap().insert(
             id,
             PtyHandle {
                 master: pair.master,
-                writer: Arc::new(Mutex::new(writer)),
+                writer,
                 killer,
                 pid,
-                shared: Arc::clone(&shared),
+                session: Arc::clone(&session),
             },
         );
 
-        // Either thread failing to start (plan-16) must not leave a pane
+        // Query answers leave the reader's thread: a child that has stopped
+        // reading would block the write, and the reader must never stop. Ends
+        // when the reader drops the sender.
+        let (replies, reply_queue) = mpsc::channel::<Vec<u8>>();
+        // Any thread failing to start (plan-16) must not leave a pane
         // registered with a live child and nobody to reap it.
-        let reader_shared = Arc::clone(&shared);
+        thread::Builder::new()
+            .name(format!("pty-{id}-reply"))
+            .spawn(move || {
+                for reply in reply_queue {
+                    let Some(writer) = reply_writer.upgrade() else { break };
+                    let mut w = writer.lock().unwrap_or_else(|p| p.into_inner());
+                    let _ = w.write_all(&reply).and_then(|()| w.flush());
+                }
+            })
+            .map_err(|e| {
+                self.undo_spawn(id);
+                format!("spawn reply thread: {e}")
+            })?;
+
+        let reader_session = Arc::clone(&session);
         thread::Builder::new()
             .name(format!("pty-{id}-read"))
             .spawn(move || {
@@ -273,10 +242,11 @@ impl PtyRegistry {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             // Always read to EOF: on Windows ClosePseudoConsole
-                            // waits for the pipe to drain. `push` discards
-                            // once the pane is closed.
-                            if reader_shared.push(&buf[..n]) {
-                                on_data_ready(id);
+                            // waits for the pipe to drain. `feed` discards
+                            // once the session is closed.
+                            let reply = reader_session.feed(&buf[..n]);
+                            if !reply.is_empty() {
+                                let _ = replies.send(reply);
                             }
                             if cfg!(debug_assertions) {
                                 bytes += n;
@@ -289,7 +259,7 @@ impl PtyRegistry {
                         }
                     }
                 }
-                reader_shared.set_eof();
+                reader_session.set_eof();
             })
             .map_err(|e| {
                 self.undo_spawn(id);
@@ -301,9 +271,7 @@ impl PtyRegistry {
             .name(format!("pty-{id}-wait"))
             .spawn(move || {
                 let code = child.wait().ok().map(|s| s.exit_code() as i32);
-                // Release a reader waiting at the cap before the drop below:
-                // ClosePseudoConsole needs the reader to reach EOF.
-                shared.exit();
+                session.set_exit(code);
                 // Drop the handle outside the lock: on Windows this is
                 // ClosePseudoConsole, which blocks until output is drained.
                 let handle = registry.panes.lock().unwrap().remove(&id);
@@ -319,10 +287,10 @@ impl PtyRegistry {
     }
 
     /// Takes a half-spawned pane back: kill the child, forget the handle
-    /// and the outbox. A reader that did start ends at EOF once the master
+    /// and the session. A reader that did start ends at EOF once the master
     /// drops with the handle.
     fn undo_spawn(&self, id: u32) {
-        if let Some(s) = self.outboxes.lock().unwrap().remove(&id) {
+        if let Some(s) = self.sessions.lock().unwrap().remove(&id) {
             s.close();
         }
         if let Some(mut h) = self.panes.lock().unwrap().remove(&id) {
@@ -330,22 +298,50 @@ impl PtyRegistry {
         }
     }
 
-    /// Everything read since the last take. Empty for an unknown id: the
-    /// pane is gone and fully drained, which is not an error for a drain
-    /// loop. The outbox is dropped once EOF has been reached and taken.
+    fn session(&self, id: u32) -> Option<Arc<Session>> {
+        self.sessions.lock().unwrap().get(&id).map(Arc::clone)
+    }
+
+    /// Everything since the first client's last take.
     pub fn take(&self, id: u32) -> Vec<u8> {
-        let shared = {
-            let outboxes = self.outboxes.lock().unwrap();
-            match outboxes.get(&id) {
-                Some(s) => Arc::clone(s),
-                None => return Vec::new(),
-            }
-        };
-        let (bytes, finished) = shared.take();
-        if finished && bytes.is_empty() {
-            self.outboxes.lock().unwrap().remove(&id);
+        self.take_from(id, FIRST_CLIENT)
+    }
+
+    /// Everything since this client's last take, or a snapshot if it owes one.
+    /// Empty for an unknown id or client: it is gone and fully drained, which
+    /// is not an error for a drain loop. The session goes once EOF has been
+    /// reached and its last client has taken it all.
+    pub fn take_from(&self, id: u32, client: ClientId) -> Vec<u8> {
+        let Some(session) = self.session(id) else { return Vec::new() };
+        let taken = session.take(client);
+        if taken.finished {
+            self.sessions.lock().unwrap().remove(&id);
         }
-        bytes
+        taken.bytes
+    }
+
+    /// A client's first take is a snapshot, so it picks up exactly where the
+    /// stream is. On an exited session this is how the tombstone gets seen.
+    pub fn attach(&self, id: u32, responder: bool, notify: Notify) -> Result<Attached, String> {
+        Ok(self.session(id).ok_or_else(|| no_pty(id))?.attach(responder, notify))
+    }
+
+    /// The shell keeps running. Idempotent, like `kill`.
+    pub fn detach(&self, id: u32, client: ClientId) {
+        if let Some(session) = self.session(id) {
+            session.detach(client);
+        }
+    }
+
+    /// Drop a tombstone nobody is going to attach to. A live session has to be
+    /// killed; this leaves it alone.
+    pub fn forget(&self, id: u32) {
+        let mut sessions = self.sessions.lock().unwrap();
+        if sessions.get(&id).is_some_and(|s| s.exit().is_some()) {
+            if let Some(s) = sessions.remove(&id) {
+                s.close();
+            }
+        }
     }
 
     /// Writes to the child. The registry lock is held only to find the
@@ -360,20 +356,22 @@ impl PtyRegistry {
         w.flush().map_err(|e| e.to_string())
     }
 
+    /// The emulator goes first: whatever the child draws after the resize has
+    /// to land on a grid of the new size.
     pub fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {
         let panes = self.panes.lock().unwrap();
         let h = panes.get(&id).ok_or_else(|| no_pty(id))?;
+        h.session.resize(cols, rows);
         h.master.resize(size(cols, rows)).map_err(|e| e.to_string())
     }
 
     /// Terminate the child. Idempotent: an unknown id is not an error, because
     /// the waiter thread may already have removed it. Cleanup and the exit
     /// callback still happen on the waiter thread.
-    /// The frontend is done with the pane: its outbox is dropped and the
-    /// reader discards from here on, so a full outbox can never hold up
-    /// the child's teardown.
+    /// Nobody wants the pane any more, so the session goes now and the reader
+    /// discards from here on.
     pub fn kill(&self, id: u32) -> Result<(), String> {
-        if let Some(s) = self.outboxes.lock().unwrap().remove(&id) {
+        if let Some(s) = self.sessions.lock().unwrap().remove(&id) {
             s.close();
         }
         let mut panes = self.panes.lock().unwrap();
@@ -385,16 +383,16 @@ impl PtyRegistry {
 
     /// Kill every registered child. Used on window close so no shells or
     /// agents outlive the app, and at boot (plan-16) so a reloaded page does
-    /// not leave its predecessor's shells running. Nothing will fetch the
-    /// outboxes, so they go too.
+    /// not leave its predecessor's shells running. Nothing will fetch from
+    /// the sessions, so they go too.
     pub fn kill_all(&self) {
-        let outboxes: Vec<_> = self.outboxes.lock().unwrap().drain().map(|(_, s)| s).collect();
-        for s in outboxes {
+        let sessions: Vec<_> = self.sessions.lock().unwrap().drain().map(|(_, s)| s).collect();
+        for s in sessions {
             s.close();
         }
         let mut panes = self.panes.lock().unwrap();
         for h in panes.values_mut() {
-            h.shared.close();
+            h.session.close();
             let _ = h.killer.kill();
         }
     }
@@ -427,7 +425,7 @@ mod tests {
         }
     }
 
-    /// Drain the pane's outbox into `acc` until `pred` matches or `timeout`
+    /// Drain the pane's first client into `acc` until `pred` matches or `timeout`
     /// passes. `ready` carries the data-ready signals; a take happens after
     /// each one, and on a short tick regardless.
     fn read_until(
@@ -451,75 +449,129 @@ mod tests {
         }
     }
 
-    // ---- Outbox / Shared: the pull protocol without a PTY ----
-
-    #[test]
-    fn push_signals_once_until_taken() {
-        let s = Shared::default();
-        assert!(s.push(b"a"), "first push after empty signals");
-        assert!(!s.push(b"b"), "outbox already announced");
-        assert_eq!(s.take(), (b"ab".to_vec(), false));
-        assert!(s.push(b"c"), "take cleared the signal");
-        assert_eq!(s.take(), (b"c".to_vec(), false));
-        assert_eq!(s.take(), (Vec::new(), false));
-    }
-
-    #[test]
-    fn push_blocks_at_cap_until_take() {
-        let s = Arc::new(Shared::default());
-        s.push(&vec![0u8; OUTBOX_CAP]);
-        let (tx, rx) = mpsc::channel();
-        let s2 = Arc::clone(&s);
-        thread::spawn(move || {
-            let signalled = s2.push(b"late");
-            let _ = tx.send(signalled);
-        });
-        assert!(
-            rx.recv_timeout(Duration::from_millis(200)).is_err(),
-            "push must block while the outbox is full"
-        );
-        let (bytes, _) = s.take();
-        assert_eq!(bytes.len(), OUTBOX_CAP);
-        // Released: the blocked push lands and, the outbox having been
-        // emptied by the take, signals again.
-        assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(true));
-        assert_eq!(s.take().0, b"late".to_vec());
-    }
-
-    #[test]
-    fn close_releases_a_blocked_push_and_discards() {
-        let s = Arc::new(Shared::default());
-        s.push(&vec![0u8; OUTBOX_CAP]);
-        let (tx, rx) = mpsc::channel();
-        let s2 = Arc::clone(&s);
-        thread::spawn(move || {
-            let _ = tx.send(s2.push(b"x"));
-        });
-        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
-        s.close();
-        assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(false));
-        assert!(!s.push(b"y"), "closed: nothing is buffered");
-        assert_eq!(s.take().0.len(), OUTBOX_CAP, "what was buffered before close stays");
-    }
-
-    #[test]
-    fn exit_releases_a_blocked_push_without_closing() {
-        let s = Arc::new(Shared::default());
-        s.push(&vec![0u8; OUTBOX_CAP]);
-        let s2 = Arc::clone(&s);
-        let t = thread::spawn(move || s2.push(b"x"));
-        s.exit();
-        assert!(!t.join().unwrap(), "full at exit: the bytes are dropped");
-        s.take();
-        assert!(s.push(b"after"), "below the cap, an exited pane still buffers");
-        s.set_eof();
-        assert_eq!(s.take(), (b"after".to_vec(), true));
-    }
-
     #[test]
     fn take_of_unknown_id_is_empty() {
         let registry = PtyRegistry::default();
         assert!(registry.take(9).is_empty());
+    }
+
+    fn temp_opts() -> SpawnOptions {
+        SpawnOptions {
+            cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+            cols: 80,
+            rows: 24,
+            shell: Some(echo_shell()),
+        }
+    }
+
+    /// Drains a client until `pred` matches or `timeout` passes.
+    fn drain_until(
+        registry: &PtyRegistry,
+        id: u32,
+        client: ClientId,
+        acc: &mut Vec<u8>,
+        timeout: Duration,
+        pred: impl Fn(&str) -> bool,
+    ) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            acc.extend(registry.take_from(id, client));
+            if pred(&String::from_utf8_lossy(acc)) {
+                return true;
+            }
+            if Instant::now() > deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Nobody plays terminal in this test. ConPTY's opening query stalls the
+    /// shell unless the session answers it, so a prompt proves that it did.
+    #[test]
+    fn a_shell_starts_with_nobody_attached_and_restores_on_attach() {
+        let registry = Arc::new(PtyRegistry::default());
+        let (exit_tx, exit_rx) = mpsc::channel::<Option<i32>>();
+        let id = registry
+            .spawn_detached(temp_opts(), Vec::new(), move |_, code| {
+                let _ = exit_tx.send(code);
+            })
+            .expect("spawn");
+        thread::sleep(Duration::from_millis(1500));
+
+        let attached = registry.attach(id, true, Arc::new(|| {})).expect("attach");
+        assert!(attached.responder);
+        assert_eq!(attached.exit, None);
+        let mut out = Vec::new();
+        let prompted = drain_until(&registry, id, attached.client, &mut out, Duration::from_secs(10), |s| {
+            s.contains('>') || s.contains('$')
+        });
+        assert!(prompted, "no prompt in the snapshot: {:?}", String::from_utf8_lossy(&out));
+        assert!(out.starts_with(b"\x1bc"), "the first bytes are a snapshot");
+
+        registry.write(id, b"echo veal-ok\r\n").unwrap();
+        let echoed = drain_until(&registry, id, attached.client, &mut out, Duration::from_secs(10), |s| {
+            s.matches("veal-ok").count() >= 2
+        });
+        assert!(echoed, "no echo after attach: {:?}", String::from_utf8_lossy(&out));
+
+        registry.write(id, b"exit\r\n").unwrap();
+        assert_eq!(exit_rx.recv_timeout(Duration::from_secs(10)), Ok(Some(0)));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while registry.session(id).is_some() {
+            registry.take_from(id, attached.client);
+            assert!(Instant::now() < deadline, "session not released after EOF");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn an_exit_with_nobody_attached_stays_until_seen() {
+        let registry = Arc::new(PtyRegistry::default());
+        let (exit_tx, exit_rx) = mpsc::channel::<Option<i32>>();
+        let id = registry
+            .spawn_detached(temp_opts(), Vec::new(), move |_, code| {
+                let _ = exit_tx.send(code);
+            })
+            .expect("spawn");
+        thread::sleep(Duration::from_millis(1500));
+        let cmd: &[u8] = if cfg!(windows) { b"exit 3\r\n" } else { b"exit 3\n" };
+        registry.write(id, cmd).unwrap();
+        assert_eq!(exit_rx.recv_timeout(Duration::from_secs(10)), Ok(Some(3)));
+        assert!(registry.session(id).is_some(), "a tombstone");
+
+        registry.forget(id + 1);
+        let attached = registry.attach(id, true, Arc::new(|| {})).expect("attach");
+        assert_eq!(attached.exit, Some(Some(3)));
+        let mut out = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while registry.session(id).is_some() {
+            out.extend(registry.take_from(id, attached.client));
+            assert!(Instant::now() < deadline, "tombstone not released once seen");
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(String::from_utf8_lossy(&out).contains("exit 3"), "the final screen: {:?}", String::from_utf8_lossy(&out));
+    }
+
+    #[test]
+    fn forget_drops_a_tombstone_and_leaves_a_live_session() {
+        let registry = Arc::new(PtyRegistry::default());
+        let (exit_tx, exit_rx) = mpsc::channel::<Option<i32>>();
+        let id = registry
+            .spawn_detached(temp_opts(), Vec::new(), move |_, code| {
+                let _ = exit_tx.send(code);
+            })
+            .expect("spawn");
+        registry.forget(id);
+        assert!(registry.session(id).is_some(), "still running");
+        assert!(registry.contains(id));
+        thread::sleep(Duration::from_millis(1500));
+        let cmd: &[u8] = if cfg!(windows) { b"exit\r\n" } else { b"exit\n" };
+        registry.write(id, cmd).unwrap();
+        exit_rx.recv_timeout(Duration::from_secs(10)).expect("exit");
+        registry.forget(id);
+        assert!(registry.session(id).is_none());
+        assert_eq!(registry.attach(id, true, Arc::new(|| {})).err(), Some(format!("no pty {id}")));
     }
 
     /// Spawn a shell, type an echo, check the bytes come back through
@@ -593,14 +645,14 @@ mod tests {
         assert_eq!(code, Some(0));
         assert!(!registry.contains(id), "handle removed after exit");
 
-        // The outbox outlives the handle until the tail has been taken.
+        // The session outlives the handle until the tail has been taken.
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             registry.take(id);
-            if !registry.outboxes.lock().unwrap().contains_key(&id) {
+            if !registry.session(id).is_some() {
                 break;
             }
-            assert!(Instant::now() < deadline, "outbox not released after EOF");
+            assert!(Instant::now() < deadline, "session not released after EOF");
             thread::sleep(Duration::from_millis(20));
         }
     }

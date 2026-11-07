@@ -1,5 +1,5 @@
 // usage: node compare.mjs <scenario|file.bin> <candidate> [cuts=60] [seed=1]
-// Candidates: alacritty, alacritty-tail, vt100, raw (ring-buffer replay baseline).
+// Candidates: alacritty-tail (veal-core, what ships), vt100, raw (ring-buffer replay baseline).
 // For each cut: restore a snapshot into a fresh xterm, compare to a control that saw
 // the whole stream so far, then feed both the rest and compare again.
 import { spawnSync } from "node:child_process";

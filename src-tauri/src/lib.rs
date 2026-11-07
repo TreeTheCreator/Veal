@@ -20,7 +20,7 @@ struct PtyExit {
     code: Option<i32>,
 }
 
-/// The pane's outbox went from empty to non-empty (plan-15): the frontend
+/// The pane's queue went from empty to non-empty (plan-15): the frontend
 /// drains it with `pty_read` until empty.
 #[derive(Clone, Serialize)]
 struct PtyData {

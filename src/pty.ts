@@ -51,8 +51,9 @@ export function resolveProxy(opts: ProxyOptions): Promise<ProxyResolved> {
 
 /**
  * Output callback (plan-15): `done` must be called once xterm has consumed
- * `bytes`; the next fetch waits for it, which is what gives the whole chain,
- * down to the child's write(), backpressure.
+ * `bytes`; the next fetch waits for it. A pane that falls too far behind does
+ * not slow the child (plan-19): its next fetch is a snapshot of the screen,
+ * starting with a reset, instead of the bytes it missed.
  */
 export type OnData = (bytes: Uint8Array, done: () => void) => void;
 
@@ -79,7 +80,7 @@ interface PtyData {
   id: number;
 }
 
-// Output is pulled (plan-15): Rust emits `pty-data` once when a pane's outbox
+// Output is pulled (plan-15): Rust emits `pty-data` once when a pane's queue
 // goes from empty to non-empty, and the session drains it with `pty_read`
 // until empty. One app-wide listener, fanned out by PTY id to the drain.
 const dataHandlers = new Map<number, () => void>();
@@ -151,7 +152,7 @@ export async function spawnPty(opts: SpawnOptions, onData: OnData): Promise<PtyS
     ...proxyArgs(opts),
   });
 
-  // The drain: one loop per session, fetching until the outbox is empty. A
+  // The drain: one loop per session, fetching until the queue is empty. A
   // signal during a loop asks for one more fetch rather than a second loop;
   // a signal outside one starts it. `pty_read` answers with an ArrayBuffer.
   let live = true;
@@ -191,7 +192,7 @@ export async function spawnPty(opts: SpawnOptions, onData: OnData): Promise<PtyS
     write: (data) => invoke("pty_write", { id, data }),
     resize: (cols, rows) => invoke("pty_resize", { id, cols, rows }),
     kill: () => {
-      // Rust drops the outbox on kill; stop fetching and stop listening.
+      // Rust drops the session on kill; stop fetching and stop listening.
       live = false;
       dataHandlers.delete(id);
       return invoke("pty_kill", { id });

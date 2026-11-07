@@ -1,7 +1,50 @@
 # Veal — plan for step 20: Shells live in a background daemon
 
 Status: build order 1 (the gate) RUN 2026-11-07: passed, with the conditions
-below. Step 2 BUILT and checked 2026-11-07. Steps 3–8 not started.
+below. Step 2 BUILT and checked 2026-11-07. Step 3 BUILT 2026-11-08, with two
+plan-15 checks left for a person (below). Steps 4–8 not started.
+
+Results for 3: `core/session.rs` holds the emulator, the serializer, a queue per
+client, query answering and tombstones. The reader no longer blocks, and a client
+past `OUTBOX_CAP` gets a snapshot on its next take. A new client starts the same way,
+so there is one snapshot path. The app still uses one client per pane; `attach`,
+`detach`, `forget` and `set_theme` exist in core and are tested, unused until steps 4–5.
+`cargo test --workspace` 109 (+2 ignored): 42 app, 67 core. Clippy has the same single
+warning. The installer went from 4.19 MB to 5.04 MB, for the emulator and
+`panic = "unwind"` together; they were not measured apart. `scripts/gate` now
+drives the shipped `Session`, not a copy.
+
+G1 repeated, on a real `claude` session of three turns with Glob, Read and Grep
+(124 KB). It found a bug the short sessions could not: 47 of 750 cuts lost a blank
+row in the alternate screen, moving everything below it up one, until the next
+redraw. A full-screen app can leave a row's wrap flag set after erasing the row below.
+Fixed, with a test: now 750 of 750 exact, at the cut and after continuing, 0 replies.
+Re-run on the fix: `styles` and `scrollback` 40 of 40 exact, 327 KB and 56 ms for
+5000 lines. `cls` was exact at all 40 cuts, and 28 ended with only the saved cursor
+row differing, the gap listed below. `shell-resize` is still the accepted G6 drift,
+measured before the fix and not re-run. Cost before the fix: 38 MB/s, 0.5% of a core
+at 195 KB/s, 16 MB. Still one session on one machine.
+
+plan-15's list on the release build, over CDP:
+
+| Check | Result |
+|---|---|
+| A1 | `pnpm test` 201, `cargo test`, `pnpm build` green |
+| A2 One pane flood | Ctrl+C to a working prompt in 326 ms |
+| A3 Four panes, 60 s | None stopped. Private bytes flat at 64 MB, UI answers in 2–6 ms, Ctrl+C in 129–243 ms each |
+| A4 Three `claude` panes, 20 minutes | **Not run: needs a person** |
+| A5 Wheel scrolling, Ink frame whole | **Not run: needs a person** |
+| A6 `exit` in a flooding pane | Closes it |
+| Page paused during a flood (acceptance 10) | Child finished 150,000 lines with the debugger paused throughout, and the screen was correct on resume, ending in the right lines and prompt. So the WebGL renderer takes a real snapshot |
+
+Emoji and CJK draw at the right width with the Unicode 11 addon, in one screenshot.
+
+Moved out of this step, against section 2: `CreateEnvironmentBlock` and the dev overlay go
+to step 5, since only a long-lived daemon can hold a stale `PATH`, and until then
+a fresh block would only lose a dev shell's variables. Reporting the theme goes to
+step 5 with the protocol's `theme` message. Headless query answers are live, but in the
+app nothing runs detached until step 4. A query in bytes dropped by an overflow
+already queued is lost, like the responder-disconnect gap in section 3.
 
 Results for 2: `pty.rs`, `agents.rs`, `proxy.rs` and `sysproxy.rs` moved
 unchanged to `src-tauri/core` (`veal-core`). `src-tauri/Cargo.toml` is now the
@@ -502,15 +545,14 @@ Run on the release build, with a real `claude` session unless stated.
 
 ## Known unknowns
 
-- Whether restore holds on a long agent session with tool use. The gate only saw
-  two short ones.
+- Whether restore holds on much longer agent sessions than the one three-turn run
+  step 3 checked, which already turned up one bug.
 - Whether a daemon started from a GUI app behaves the same under ConPTY as
   panes do now, including no console windows flashing up. Checked in step 5.
 - Antivirus and SmartScreen. Veal's installer has an updater signature, and I
   found no Authenticode step in `release.mjs`. An unsigned background process
   that launches shells is more likely to be flagged than a windowed app. Test
   on a clean machine before release; signing may become a real need.
-- How much `panic = "unwind"` adds to the installer.
 - Whether `CREATE_BREAKAWAY_FROM_JOB` fails when the app's parent job forbids
   it, for example when launched from some terminals. It needs a fallback to
   launching without the flag.
@@ -544,3 +586,5 @@ Run on the release build, with a real `claude` session unless stated.
 - 2026-11-07: step 2 built. Panic setting moved to step 3, logger and daemon crate
   to step 5.
 - 2026-11-07: step 2's dry run and pane launch passed with Veal closed.
+- 2026-11-08: step 3 built. Repeating G1 found the stale-wrap bug, now fixed. Fresh
+  environment and theme reporting moved to step 5.
