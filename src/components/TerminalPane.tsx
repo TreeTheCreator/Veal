@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { spawnPty, type PtySession } from "../pty";
@@ -59,7 +60,8 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
       cursorBlink: true,
       allowProposedApi: true,
       theme: terminalTheme(),
-      // Turns on xterm's ConPTY heuristics (scrollback on resize, no reflow).
+      // Turns on xterm's ConPTY heuristics. At this build it reflows the main
+      // screen on resize and leaves only the alternate screen alone.
       windowsPty: isWindows ? { backend: "conpty", buildNumber: 26200 } : undefined,
     });
     termRef.current = term;
@@ -98,6 +100,10 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // The default Unicode 6 table makes an emoji 1 column wide where the shell's
+    // emulator says 2, and a restored screen must agree with it (plan-19).
+    term.loadAddon(new Unicode11Addon());
+    term.unicode.activeVersion = "11";
     term.open(host);
 
     // A paste with an image and no text would paste nothing; send Alt+V's
