@@ -4813,11 +4813,9 @@ name = "veal"
 version = "0.1.2"
 dependencies = [
  "notify",
- "portable-pty",
  "rusqlite",
  "serde",
  "serde_json",
- "sysinfo",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -4825,6 +4823,18 @@ dependencies = [
  "tauri-plugin-updater",
  "tempfile",
  "trash",
+ "veal-core",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "veal-core"
+version = "0.1.2"
+dependencies = [
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "sysinfo",
  "windows-sys 0.61.2",
 ]
 

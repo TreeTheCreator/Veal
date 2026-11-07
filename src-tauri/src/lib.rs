@@ -1,15 +1,12 @@
-mod agents;
 mod db;
 mod fs;
-mod proxy;
-mod pty;
-mod sysproxy;
 mod tasks;
 mod watch;
 
 use db::{Db, Project};
-use pty::{PtyRegistry, SpawnOptions};
 use tasks::{Status, Task, TasksLock};
+use veal_core::pty::{PtyRegistry, SpawnOptions};
+use veal_core::{agents, proxy, sysproxy};
 use watch::Watchers;
 use serde::Serialize;
 use std::collections::HashMap;
