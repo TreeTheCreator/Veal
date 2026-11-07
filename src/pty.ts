@@ -89,7 +89,7 @@ function ensureDataListener() {
   dataListener ??= listen<PtyData>("pty-data", (ev) => dataHandlers.get(ev.payload.id)?.());
 }
 
-/** Mirrors `AGENTS` in src-tauri/src/agents.rs — display only; Rust decides. */
+/** Mirrors `AGENTS` in src-tauri/core/src/agents.rs — display only; Rust decides. */
 export const AGENTS = ["claude", "codex", "aider", "gemini", "copilot", "amp", "goose", "opencode"];
 
 interface PaneAgent {

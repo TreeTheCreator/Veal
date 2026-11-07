@@ -7,6 +7,11 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+# This manifest is the workspace root as well as the app, so `target/` stays
+# where scripts/release.mjs looks for the installer (plan-19).
+[workspace]
+members = ["core"]
+
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
@@ -21,20 +26,18 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-portable-pty = "0.9.0"
+veal-core = { path = "core" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 tauri-plugin-dialog = "2.7.3"
 tauri-plugin-single-instance = "2"
 notify = "8"
-sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 trash = "5"
 tauri-plugin-updater = "2.12.0"
 
 [target.'cfg(windows)'.dependencies]
 # Already in the tree through Tauri; `fs::write` puts a saved file's
-# hidden/system bits back after the rename (plan-13). WinHttp and Foundation
-# read the user's proxy setting (plan-18).
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Networking_WinHttp", "Win32_Foundation"] }
+# hidden/system bits back after the rename (plan-13).
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
