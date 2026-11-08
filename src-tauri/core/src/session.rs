@@ -492,12 +492,15 @@ struct Inner {
     eof: bool,
     /// Nobody wants this session any more: discard everything.
     closed: bool,
+    /// Answers to a query left to the responder, with no output since. A child
+    /// that went on printing has been answered or is not waiting. ConPTY waits
+    /// for its opening query for ever, so if the responder goes first the answer
+    /// must still be sent.
+    owed: Vec<u8>,
 }
 
 pub struct Attached {
     pub client: ClientId,
-    /// False if another client already answers queries. At most one does.
-    pub responder: bool,
     /// Set if the child had already exited: a tombstone.
     pub exit: Option<Option<i32>>,
 }
@@ -512,6 +515,22 @@ pub struct Session {
     inner: Mutex<Inner>,
 }
 
+/// `ESC [ row ; col R` anywhere in `data`.
+fn has_cursor_report(data: &[u8]) -> bool {
+    data.windows(2).enumerate().any(|(i, w)| {
+        if w != b"\x1b[" {
+            return false;
+        }
+        let rest = &data[i + 2..];
+        let row = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+        if row == 0 || rest.get(row) != Some(&b';') {
+            return false;
+        }
+        let col = rest[row + 1..].iter().take_while(|b| b.is_ascii_digit()).count();
+        col > 0 && rest.get(row + 1 + col) == Some(&b'R')
+    })
+}
+
 impl Session {
     pub fn new(cols: u16, rows: u16) -> Self {
         Session {
@@ -521,6 +540,7 @@ impl Session {
                 exit: None,
                 eof: false,
                 closed: false,
+                owed: Vec::new(),
             }),
         }
     }
@@ -556,23 +576,33 @@ impl Session {
                 wake.push(Arc::clone(&client.notify));
             }
         }
+        let replies = if answered {
+            inner.owed = replies;
+            Vec::new()
+        } else {
+            inner.owed.clear();
+            replies
+        };
         drop(inner);
         for notify in wake {
             notify();
         }
-        if answered {
-            Vec::new()
-        } else {
-            replies
-        }
+        replies
     }
 
     /// Adds a client whose first take is a snapshot, unless this is the very
     /// start of the session (`fresh`), when there is nothing to restore and
     /// the client answers ConPTY's opening query as it always has.
+    /// At most one client answers queries, and the newest responder is it: an
+    /// older one may be a page that is already gone, and its xterm is not
+    /// answering, while the new one's xterm always does.
     fn add_client(&self, responder: bool, fresh: bool, notify: Notify) -> Attached {
         let mut inner = self.lock();
-        let responder = responder && !inner.clients.all.values().any(|c| c.responder);
+        if responder {
+            for c in inner.clients.all.values_mut() {
+                c.responder = false;
+            }
+        }
         let client = inner.clients.next;
         inner.clients.next += 1;
         inner.clients.all.insert(
@@ -590,7 +620,7 @@ impl Session {
         if !fresh {
             notify();
         }
-        Attached { client, responder, exit }
+        Attached { client, exit }
     }
 
     /// The client a new session starts with, before any output.
@@ -606,6 +636,37 @@ impl Session {
     /// answered are lost (plan-19, section 3).
     pub fn detach(&self, client: ClientId) {
         self.lock().clients.all.remove(&client);
+    }
+
+    /// Every client went away at once: a page reload, or a lost connection.
+    pub fn detach_all(&self) {
+        self.lock().clients.all.clear();
+    }
+
+    /// Whether answers are owed that no client can still give: the responder is
+    /// gone, or replaced by one that will only get a snapshot, which has no query
+    /// in it.
+    pub fn owes(&self) -> bool {
+        let inner = self.lock();
+        !inner.owed.is_empty() && !inner.clients.all.values().any(|c| c.responder && !c.resync)
+    }
+
+    /// The owed answers, for the caller to write to the child. Only after a wait:
+    /// an answer the old page sent may still be on its way, and a second cursor
+    /// report reads as F3, which PowerShell takes as a search for the next key.
+    pub fn take_owed(&self) -> Vec<u8> {
+        if !self.owes() {
+            return Vec::new();
+        }
+        std::mem::take(&mut self.lock().owed)
+    }
+
+    /// Input from a client on its way to the child. A cursor report in it is the
+    /// responder's answer, so nothing is owed.
+    pub fn note_input(&self, data: &[u8]) {
+        if has_cursor_report(data) {
+            self.lock().owed.clear();
+        }
     }
 
     /// Everything since the last take, or a snapshot if the client owes one.
@@ -964,6 +1025,73 @@ mod tests {
     }
 
     #[test]
+    fn a_responder_gone_before_answering_leaves_the_answer_owed() {
+        let s = Session::new(40, 8);
+        let c = s.first_client(quiet());
+        assert!(s.feed(b"[3;5H[6n").is_empty());
+        assert!(s.take_owed().is_empty(), "it can still answer");
+        s.detach(c);
+        assert_eq!(s.take_owed(), b"[3;5R", "or conhost waits for ever");
+        assert!(s.take_owed().is_empty(), "once");
+    }
+
+    #[test]
+    fn the_responders_own_answer_means_nothing_is_owed() {
+        let s = Session::new(40, 8);
+        let c = s.first_client(quiet());
+        assert!(s.feed(DSR).is_empty());
+        s.note_input(b"x\x1b[A");
+        s.detach(c);
+        assert!(s.owes(), "keys are not an answer");
+        s.note_input(b"\x1b[12;40R");
+        assert!(!s.owes());
+        assert!(s.take_owed().is_empty());
+    }
+
+    #[test]
+    fn cursor_reports_are_found_and_lookalikes_are_not() {
+        for yes in [&b"\x1b[1;1R"[..], b"ab\x1b[24;80Rcd", b"\x1b[\x1b[3;4R"] {
+            assert!(has_cursor_report(yes), "{yes:?}");
+        }
+        for no in [&b"\x1b[A"[..], b"\x1b[;1R", b"\x1b[1;R", b"\x1b[1;2", b"1;1R", b"\x1b[1R"] {
+            assert!(!has_cursor_report(no), "{no:?}");
+        }
+    }
+
+    #[test]
+    fn output_after_a_query_means_nothing_is_owed() {
+        let s = Session::new(40, 8);
+        let c = s.first_client(quiet());
+        assert!(s.feed(DSR).is_empty());
+        assert!(s.feed(b"prompt> ").is_empty());
+        s.detach(c);
+        assert!(s.take_owed().is_empty());
+    }
+
+    #[test]
+    fn a_new_responder_cannot_answer_what_its_snapshot_leaves_out() {
+        let s = Session::new(40, 8);
+        let first = s.first_client(quiet());
+        assert!(s.feed(DSR).is_empty());
+        let second = s.attach(true, quiet()).client;
+        assert_eq!(s.take_owed(), b"[1;1R");
+        s.take(first);
+        s.take(second);
+        assert!(s.feed(DSR).is_empty(), "caught up, it answers the next one");
+        assert!(s.take_owed().is_empty());
+    }
+
+    #[test]
+    fn a_non_responder_leaving_changes_nothing() {
+        let s = Session::new(40, 8);
+        let _responder = s.first_client(quiet());
+        let watcher = s.attach(false, quiet()).client;
+        assert!(s.feed(DSR).is_empty());
+        s.detach(watcher);
+        assert!(s.take_owed().is_empty());
+    }
+
+    #[test]
     fn a_non_responder_does_not_count() {
         let s = Session::new(40, 8);
         let watcher = s.attach(false, quiet()).client;
@@ -973,13 +1101,28 @@ mod tests {
     }
 
     #[test]
-    fn there_is_at_most_one_responder_and_the_role_comes_free_on_detach() {
+    fn the_newest_responder_takes_the_role_so_a_query_is_answered_once() {
         let s = Session::new(40, 8);
-        let first = s.attach(true, quiet());
-        assert!(first.responder);
-        assert!(!s.attach(true, quiet()).responder);
-        s.detach(first.client);
-        assert!(s.attach(true, quiet()).responder);
+        let old = s.attach(true, quiet()).client;
+        s.take(old);
+        let new = s.attach(true, quiet()).client;
+        s.take(new);
+        assert!(s.feed(DSR).is_empty(), "the new client answers");
+        s.detach(old);
+        assert!(s.feed(DSR).is_empty(), "a late detach of the old one changes nothing");
+        s.detach(new);
+        assert!(!s.feed(DSR).is_empty(), "nobody left: the session answers");
+    }
+
+    #[test]
+    fn detach_all_leaves_the_shell_running_with_the_session_answering() {
+        let s = Session::new(40, 8);
+        let c = s.first_client(quiet());
+        s.detach_all();
+        assert!(!s.feed(DSR).is_empty());
+        assert!(s.take(c).bytes.is_empty(), "the old client is gone");
+        let next = s.attach(true, quiet()).client;
+        assert!(s.take(next).bytes.starts_with(b"\x1bc"), "and the next one gets a snapshot");
     }
 
     #[test]

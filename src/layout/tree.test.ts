@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { insert, panes, remove, setWeights, type LayoutNode, type PaneNode } from "./tree";
 
-const pane = (id: number): PaneNode => ({ type: "pane", id, cwd: "C:\\veal" });
+const pane = (id: number): PaneNode => ({ type: "pane", id, cwd: "C:\\veal", session: `k${id}` });
 
 // Compact shape for assertions: pane id, or [dir, ...children].
 function shape(node: LayoutNode | null): unknown {

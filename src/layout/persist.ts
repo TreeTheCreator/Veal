@@ -1,6 +1,7 @@
 // Saves the split tree to the `layout` settings key so the app reopens where
-// it left off, and restores it on boot. Restored panes respawn fresh shells in
-// their saved cwd; scrollback is not part of the snapshot.
+// it left off, and restores it on boot. A restored pane reattaches to its shell
+// if that is still running (sessions.ts), and otherwise spawns a fresh one in
+// its saved cwd; scrollback is not part of the snapshot.
 import { db } from "../db";
 import { useLayout } from "./store";
 import { PANE_CAP, panes, type LayoutNode, type PaneNode, type SplitNode } from "./tree";
@@ -24,17 +25,22 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
 }
 
+/** What we write ourselves is a UUID; this only guards against a corrupted value. */
+const SESSION_KEY = /^[\w-]{1,64}$/;
+
 function parseNode(v: unknown): LayoutNode | null {
   if (!isRecord(v)) return null;
   if (v.type === "pane") {
     // A legacy `kind` (the manual Shell / Agent label, dropped in plan-17) is
     // ignored, so the next save writes panes without it.
-    const { id, cwd } = v;
+    const { id, cwd, session } = v;
     // Positive safe integers only (plan-16): `-5` and `1e300` are integers
     // to `Number.isInteger`, and a corrupted snapshot is dropped, not repaired.
     if (!Number.isSafeInteger(id) || (id as number) <= 0) return null;
     if (typeof cwd !== "string" || !cwd) return null;
-    const pane: PaneNode = { type: "pane", id: id as number, cwd };
+    // A pane saved before plan-19, or with a bad key, keeps its place with a new one.
+    const key = typeof session === "string" && SESSION_KEY.test(session) ? session : crypto.randomUUID();
+    const pane: PaneNode = { type: "pane", id: id as number, cwd, session: key };
     return pane;
   }
   if (v.type === "split") {
@@ -70,6 +76,7 @@ export function parseLayout(json: string | undefined | null): LayoutSnapshot | n
   if (leaves.length > PANE_CAP) return null;
   const ids = leaves.map((p) => p.id);
   if (new Set(ids).size !== ids.length) return null;
+  if (new Set(leaves.map((p) => p.session)).size !== leaves.length) return null;
   const nextId = ids.length ? Math.max(...ids) + 1 : 1;
   const focused =
     typeof raw.focused === "number" && ids.includes(raw.focused) ? raw.focused : (ids[0] ?? null);

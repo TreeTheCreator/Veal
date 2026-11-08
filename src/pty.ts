@@ -1,9 +1,12 @@
 // Thin wrapper over the pty_* commands so components never call `invoke` directly.
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { SessionInfo } from "./layout/sessions";
 import type { ProxyMode } from "./settings/store";
 
-export interface SpawnOptions {
+export interface OpenOptions {
+  /** The pane's session key: attaches if that shell is running, else spawns it. */
+  key: string;
   cwd: string;
   cols: number;
   rows: number;
@@ -38,7 +41,7 @@ export interface ProxyResolved {
   };
 }
 
-type ProxyOptions = Pick<SpawnOptions, "proxyMode" | "proxyPort" | "proxyBypass">;
+type ProxyOptions = Pick<OpenOptions, "proxyMode" | "proxyPort" | "proxyBypass">;
 
 /** The argument object both proxy commands take; keys must match Rust's. */
 function proxyArgs(opts: ProxyOptions) {
@@ -61,7 +64,8 @@ export interface PtySession {
   id: number;
   write(data: string): Promise<void>;
   resize(cols: number, rows: number): Promise<void>;
-  kill(): Promise<void>;
+  /** This terminal is done with the shell, which keeps running (plan-19). */
+  detach(): Promise<void>;
   /** Fires once when the child exits. Returns an unsubscribe function. */
   onExit(cb: (code: number | null) => void): () => void;
   /**
@@ -101,11 +105,15 @@ interface PaneAgent {
 // One app-wide listener for `pty-agent`, fanned out by PTY id. The PTY id is
 // not the pane id: the pane that owns the session maps it (TerminalPane).
 const agentHandlers = new Map<number, Set<(agent: string | null) => void>>();
+// The last answer seen per id: one that arrives while `pty_open` is in flight
+// is newer than what its reply says.
+const latestAgents = new Map<number, string | null>();
 let agentListener: Promise<UnlistenFn> | null = null;
 
 function ensureAgentListener() {
   agentListener ??= listen<PaneAgent>("pty-agent", (ev) => {
     const { id, agent } = ev.payload;
+    latestAgents.set(id, agent);
     agentHandlers.get(id)?.forEach((cb) => cb(agent));
   });
 }
@@ -124,33 +132,73 @@ function ensureExitListener() {
     exitHandlers.delete(id);
     // Nothing more comes for this pid (plan-14); the pane's own unsubscribe is null-safe.
     agentHandlers.delete(id);
+    latestAgents.delete(id);
     if (handlers) handlers.forEach((cb) => cb(code));
     else earlyExits.set(id, code);
   });
 }
 
-/**
- * Kill every shell a previous page left behind (plan-16). A page reload
- * skips React cleanup, so a boot that finds panes registered is a page
- * whose predecessor is gone; their late exits and drains are for nobody.
- */
-export async function resetSessions(): Promise<void> {
-  await invoke("pty_reset");
-  earlyExits.clear();
-  dataHandlers.clear();
+/** One row of `pty_list`: what is running, whatever the page knows about. */
+export function listSessions(): Promise<SessionInfo[]> {
+  return invoke<SessionInfo[]>("pty_list");
 }
 
-export async function spawnPty(opts: SpawnOptions, onData: OnData): Promise<PtySession> {
-  ensureExitListener();
-  ensureAgentListener();
-  ensureDataListener();
-  const id = await invoke<number>("pty_spawn", {
+/** Boot found an exited session it has nothing to show for. */
+export function forgetSession(key: string): Promise<void> {
+  return invoke("pty_forget", { key });
+}
+
+// Opens and kills overlap: `pty_open` can be blocked on the proxy for a while,
+// and commands do not run in the order they were sent.
+const opening = new Map<string, Promise<unknown>>();
+const killing = new Set<Promise<unknown>>();
+
+/**
+ * End a pane's shell. Waits for an open of that key still in flight, or the kill
+ * would find nothing and the open would then start a shell nobody wanted.
+ */
+export function killSession(key: string): Promise<void> {
+  const done = Promise.resolve(opening.get(key))
+    .catch(() => {})
+    .then(() => invoke<void>("pty_kill", { key }))
+    .finally(() => killing.delete(done));
+  killing.add(done);
+  return done;
+}
+
+interface OpenedPane {
+  id: number;
+  client: number;
+  exited: boolean;
+  code: number | null;
+  agent: string | null;
+}
+
+async function open(opts: OpenOptions): Promise<OpenedPane> {
+  // A pane just closed may be what makes room under the cap in Rust.
+  await Promise.allSettled([...killing]);
+  return invoke<OpenedPane>("pty_open", {
+    key: opts.key,
     cwd: opts.cwd,
     cols: opts.cols,
     rows: opts.rows,
     shell: opts.shell ?? null,
     ...proxyArgs(opts),
   });
+}
+
+export async function openPty(opts: OpenOptions, onData: OnData): Promise<PtySession> {
+  ensureExitListener();
+  ensureAgentListener();
+  ensureDataListener();
+  const pending = open(opts);
+  opening.set(opts.key, pending);
+  const opened = await pending.finally(() => {
+    if (opening.get(opts.key) === pending) opening.delete(opts.key);
+  });
+  const { id, client } = opened;
+  // Exited before this page looked: a tombstone. Delivered like any early exit.
+  if (opened.exited) earlyExits.set(id, opened.code);
 
   // The drain: one loop per session, fetching until the queue is empty. A
   // signal during a loop asks for one more fetch rather than a second loop;
@@ -167,7 +215,7 @@ export async function spawnPty(opts: SpawnOptions, onData: OnData): Promise<PtyS
     try {
       while (live) {
         again = false;
-        const bytes = new Uint8Array(await invoke<ArrayBuffer>("pty_read", { id }));
+        const bytes = new Uint8Array(await invoke<ArrayBuffer>("pty_read", { id, client }));
         if (!live) break;
         if (bytes.length === 0) {
           if (again) continue;
@@ -182,20 +230,22 @@ export async function spawnPty(opts: SpawnOptions, onData: OnData): Promise<PtyS
     }
   };
   dataHandlers.set(id, drain);
-  // The shell may have written (and signalled) before `pty_spawn` replied:
+  // The shell may have written (and signalled) before `pty_open` replied:
   // that signal is folded into Rust's `notified` flag, so one unconditional
-  // drain covers it and nothing before this point can be lost.
+  // drain covers it and nothing before this point can be lost. After an attach
+  // this first read is the snapshot.
   void drain();
 
   return {
     id,
     write: (data) => invoke("pty_write", { id, data }),
     resize: (cols, rows) => invoke("pty_resize", { id, cols, rows }),
-    kill: () => {
-      // Rust drops the session on kill; stop fetching and stop listening.
+    detach: () => {
+      // Stop fetching and stop listening. Another terminal may already have
+      // this id, as with React's double effect.
       live = false;
-      dataHandlers.delete(id);
-      return invoke("pty_kill", { id });
+      if (dataHandlers.get(id) === drain) dataHandlers.delete(id);
+      return invoke("pty_detach", { id, client });
     },
     onExit(cb) {
       if (earlyExits.has(id)) {
@@ -218,6 +268,10 @@ export async function spawnPty(opts: SpawnOptions, onData: OnData): Promise<PtyS
       let set = agentHandlers.get(id);
       if (!set) agentHandlers.set(id, (set = new Set()));
       set.add(cb);
+      // Attaching to a shell whose agent is already running: the poller only
+      // reports changes, so this is the only time this page hears about it.
+      const current = latestAgents.has(id) ? latestAgents.get(id)! : opened.agent;
+      if (current !== null) cb(current);
       return () => {
         agentHandlers.get(id)?.delete(cb);
         if (agentHandlers.get(id)?.size === 0) agentHandlers.delete(id);

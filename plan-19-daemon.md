@@ -2,7 +2,55 @@
 
 Status: build order 1 (the gate) RUN 2026-11-07: passed, with the conditions
 below. Step 2 BUILT and checked 2026-11-07. Step 3 BUILT 2026-11-08, with two
-plan-15 checks left for a person (below). Steps 4–8 not started.
+plan-15 checks left for a person (below). Step 4 BUILT 2026-11-08. Steps 5–8 not
+started.
+
+Results for 4: panes carry a UUID `session` key and `pty_open` attaches to it or
+spawns it, so F5 keeps every shell. `pty_spawn` and `pty_reset` are gone. Rust's
+`on_page_load` (Started) detaches every client, standing in for a dropped
+connection until step 5. Boot runs `reconcile` (one test per row of section 5), and a
+layout subscriber is the only thing that kills. `MAX_SESSIONS` = `PANE_CAP`, by test.
+The newest responder takes the role, so a reload or React's double effect answers a
+query once. `cargo test --workspace` 123 (+2 ignored): 42 app, 81 core. `pnpm test`
+229. Clippy has the same single warning. Installer 5.06 MB.
+
+Live, on the release build over CDP (`Page.reload`, which is what F5 does):
+
+| Check | Result |
+|---|---|
+| F5 with a child counting to a file | Same shell PIDs, the child never stopped, screen restored, twice in a row |
+| Input after reattach | Ctrl+C stops the child, typing works |
+| Close a pane, then F5 | Only its shell dies, and it stays closed |
+| Agent across F5 | Badge shows at once after the reload, clears when the agent exits |
+| `exit 0` during a reload | Pane closes |
+| `exit 3` during a reload | `process exited (code 3)` and the last screen, on every later reload too, until the pane is closed |
+| F5 30–90 ms after a new pane | 0 of 30 shells stuck (was 1 of 12, see below) |
+| Close the app | Exits, no shells left; relaunch restores the layout with fresh shells |
+
+Three things the live run found, all fixed with tests:
+
+- A tombstone was dropped once its last client had drained it, so a second F5
+  started a fresh shell in a pane that had just said `exit 3`. A session opened by
+  key now stays until its pane closes (`kill`) or boot finds no pane for it
+  (`forget`), against section 2's "until a client has seen it".
+- ConPTY's opening cursor query, sent to a page that is then reloaded, was never
+  answered, and the shell hung for good: section 3's known gap, but for the one
+  query that cannot time out. The session now remembers answers it left to a
+  responder until the child's next output, and sends them itself if no caught-up
+  responder is left.
+- Sending that answer while the old page's own answer was still in flight gave
+  conhost two, and the second `ESC[1;1R` is xterm's F3, which PowerShell binds to
+  a search that swallows the next key. The owed answer now waits 250 ms and is
+  dropped if a client's input carries a cursor report.
+
+Open: once, after a long run of these scripts in which the CDP harness itself
+also broke, closing the app left `veal.exe` running with no window and its shell
+alive: `kill_all` did not run, or blocked. Idle, so a wait, not a loop. Not
+reproduced in three more instances running the same scripts, nor with no debugger to
+see where it stopped. Watch for it; step 6 replaces this close path anyway.
+Console noise on reload, harmless: Tauri's "IPC custom protocol failed" and
+"Couldn't find callback id" for calls the old page left in flight, and
+`pty_write`/`pty_resize` "no pty" from an exited pane.
 
 Results for 3: `core/session.rs` holds the emulator, the serializer, a queue per
 client, query answering and tombstones. The reader no longer blocks, and a client
@@ -252,8 +300,9 @@ snapshot when it next catches up. Up to 5000 lines of scrollback survive
 this because the snapshot carries them. Re-run plan-15's acceptance list.
 
 **Exited sessions.** A session whose child exits with nobody attached stays
-as a tombstone (key and exit code) until a client has seen it or the daemon
-exits. Without this, code 0 while detached could not close the pane and a
+as a tombstone (key and exit code) until its pane closes, boot finds no pane
+for it, or the daemon exits. (Step 4: "until a client has seen it" lost the
+message on a second reload.) Without this, code 0 while detached could not close the pane and a
 crash could not show `process exited`.
 
 **Environment.** A long-lived daemon would hand new panes a stale `PATH`
@@ -286,7 +335,9 @@ agent that detects kitty keyboard support would switch modes and xterm would
 then mis-encode its keys.
 
 Known gap: a query sent to a responder that disconnects before answering is
-lost. See A9.
+lost. See A9. Except when the child prints nothing after it, which is ConPTY
+waiting on its opening query: then the session sends the answer itself, 250 ms
+later, unless a client's input carried a cursor report (step 4).
 
 ## 4. Protocol (`core/protocol.rs`)
 
@@ -588,3 +639,5 @@ Run on the release build, with a real `claude` session unless stated.
 - 2026-11-07: step 2's dry run and pane launch passed with Veal closed.
 - 2026-11-08: step 3 built. Repeating G1 found the stale-wrap bug, now fixed. Fresh
   environment and theme reporting moved to step 5.
+- 2026-11-08: step 4 built. The live run found tombstones dropped too early and a
+  shell stuck on its opening query after a reload; sections 2 and 3 changed to match.

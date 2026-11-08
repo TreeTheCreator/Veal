@@ -180,6 +180,13 @@ fn snapshot(sys: &mut System) -> Vec<Proc> {
 
 /// Starts the poller thread. Idle (no panes) ticks skip the refresh.
 pub fn start(registry: Arc<PtyRegistry>, sink: impl Fn(PaneAgent) + Send + 'static) {
+    // Kept in the registry too: a client that attaches later needs the answer,
+    // and `tick` only reports changes.
+    let noted = Arc::clone(&registry);
+    let sink = move |a: PaneAgent| {
+        noted.note_agent(a.id, a.agent.clone());
+        sink(a);
+    };
     std::thread::Builder::new()
         .name("veal-agents".into())
         .spawn(move || {

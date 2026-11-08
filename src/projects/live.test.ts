@@ -8,7 +8,7 @@ const projects: Project[] = [
   { id: 2, name: "hungy", path: "C:\\Users\\user\\Hungy games", missing: false },
 ];
 
-const pane = (id: number, cwd: string): PaneNode => ({ type: "pane", id, cwd });
+const pane = (id: number, cwd: string): PaneNode => ({ type: "pane", id, cwd, session: `k${id}` });
 
 describe("liveProjectIds", () => {
   it("lights a project whose root pane has a detected agent", () => {

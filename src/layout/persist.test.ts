@@ -8,7 +8,7 @@ vi.mock("../db", () => ({ db: { settingsSet: (k: string, v: string) => settingsS
 
 const CWD = "C:\\Users\\user\\veal";
 
-const pane = (id: number): PaneNode => ({ type: "pane", id, cwd: CWD });
+const pane = (id: number): PaneNode => ({ type: "pane", id, cwd: CWD, session: `k${id}` });
 
 function fourPanes(): LayoutNode {
   let t: LayoutNode | null = null;
@@ -63,8 +63,43 @@ describe("parseLayout", () => {
       nextId: 3,
     };
     const snap = parseLayout(JSON.stringify(legacy));
-    expect(snap?.tree).toEqual({ type: "split", dir: "row", weights: [1, 1], children: [pane(1), pane(2)] });
+    expect(snap?.tree).toMatchObject({
+      type: "split",
+      dir: "row",
+      weights: [1, 1],
+      children: [
+        { type: "pane", id: 1, cwd: CWD },
+        { type: "pane", id: 2, cwd: CWD },
+      ],
+    });
     expect(serializeLayout(snap!)).not.toContain("kind");
+  });
+
+  it("keeps a pane's session key", () => {
+    const snap = parseLayout(serializeLayout({ tree: pane(1), focused: 1, nextId: 2 }));
+    expect(snap?.tree).toEqual(pane(1));
+  });
+
+  it("gives a pane saved before plan-19 a key, and keeps the pane", () => {
+    const snap = parseLayout(JSON.stringify({ tree: { type: "pane", id: 1, cwd: CWD } }));
+    expect(snap?.tree).toMatchObject({ type: "pane", id: 1, cwd: CWD, session: expect.stringMatching(/^[\w-]{36}$/) });
+  });
+
+  it("replaces a malformed key, and keeps the pane", () => {
+    for (const session of [7, "", "has spaces", "x".repeat(65), null]) {
+      const snap = parseLayout(JSON.stringify({ tree: { type: "pane", id: 1, cwd: CWD, session } }));
+      expect(snap?.tree).toMatchObject({ type: "pane", id: 1, cwd: CWD, session: expect.stringMatching(/^[\w-]{36}$/) });
+    }
+  });
+
+  it("rejects two panes claiming one shell", () => {
+    const dup: LayoutNode = {
+      type: "split",
+      dir: "row",
+      weights: [1, 1],
+      children: [pane(1), { ...pane(2), session: "k1" }],
+    };
+    expect(parseLayout(JSON.stringify({ tree: dup }))).toBeNull();
   });
 
   it("rejects a tree over the cap or with duplicate ids", () => {

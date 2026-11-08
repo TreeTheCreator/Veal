@@ -5,13 +5,15 @@ mod watch;
 
 use db::{Db, Project};
 use tasks::{Status, Task, TasksLock};
-use veal_core::pty::{PtyRegistry, SpawnOptions};
+use veal_core::pty::{DataReady, PtyRegistry, SessionInfo, SpawnOptions};
+use veal_core::session::ClientId;
 use veal_core::{agents, proxy, sysproxy};
 use watch::Watchers;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::ipc::Response;
+use tauri::webview::PageLoadEvent;
 use tauri::{Emitter, Manager, State, WindowEvent};
 
 #[derive(Clone, Serialize)]
@@ -66,11 +68,30 @@ fn proxy_resolve(proxy_mode: Option<String>, proxy_port: Option<String>, proxy_b
     ProxyPreview { resolved, env }
 }
 
+/// What a pane gets back from `pty_open`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenedPane {
+    id: u32,
+    client: ClientId,
+    exited: bool,
+    code: Option<i32>,
+    agent: Option<String>,
+}
+
+impl From<veal_core::pty::Opened> for OpenedPane {
+    fn from(o: veal_core::pty::Opened) -> Self {
+        OpenedPane { id: o.id, client: o.client, exited: o.exit.is_some(), code: o.exit.flatten(), agent: o.agent }
+    }
+}
+
+/// Attach to the pane's session, or spawn it if there is none (plan-19).
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
-fn pty_spawn(
+fn pty_open(
     app: tauri::AppHandle,
     registry: State<'_, Arc<PtyRegistry>>,
+    key: String,
     cwd: String,
     cols: u16,
     rows: u16,
@@ -78,34 +99,48 @@ fn pty_spawn(
     proxy_mode: Option<String>,
     proxy_port: Option<String>,
     proxy_bypass: Option<String>,
-) -> Result<u32, String> {
+) -> Result<OpenedPane, String> {
+    let ready_app = app.clone();
+    let on_data_ready: DataReady = Arc::new(move |id: u32| {
+        let _ = ready_app.emit("pty-data", PtyData { id });
+    });
+    // Only a spawn needs the proxy, and resolving it can block.
+    if let Some(opened) = registry.attach_key(&key, cols, rows, Arc::clone(&on_data_ready)) {
+        return Ok(opened.into());
+    }
     let resolved = resolve_proxy(proxy_mode.as_deref(), proxy_port.as_deref());
     let env = proxy::proxy_env(&resolved, proxy_bypass.as_deref());
-    let ready_app = app.clone();
-    let on_data_ready = move |id: u32| {
-        let _ = ready_app.emit("pty-data", PtyData { id });
-    };
     let on_exit = move |id: u32, code: Option<i32>| {
         let _ = app.emit("pty-exit", PtyExit { id, code });
     };
-    registry.spawn_with_env(
-        SpawnOptions {
-            cwd,
-            cols,
-            rows,
-            shell,
-        },
-        env,
-        on_data_ready,
-        on_exit,
-    )
+    registry
+        .open(&key, SpawnOptions { cwd, cols, rows, shell }, env, on_data_ready, on_exit)
+        .map(OpenedPane::from)
+}
+
+/// What is running, for boot to reconcile against the saved layout (plan-19).
+#[tauri::command(async)]
+fn pty_list(registry: State<'_, Arc<PtyRegistry>>) -> Vec<SessionInfo> {
+    registry.list()
+}
+
+/// The pane's terminal went away; its shell keeps running.
+#[tauri::command(async)]
+fn pty_detach(registry: State<'_, Arc<PtyRegistry>>, id: u32, client: ClientId) {
+    registry.detach(id, client);
+}
+
+/// Boot found an exited session it has nothing to show for.
+#[tauri::command(async)]
+fn pty_forget(registry: State<'_, Arc<PtyRegistry>>, key: String) {
+    registry.forget_key(&key);
 }
 
 /// Raw bytes reach JS as an ArrayBuffer over the ipc protocol; xterm decodes
 /// UTF-8 itself, so a take boundary inside a multibyte sequence is harmless.
 #[tauri::command(async)]
-fn pty_read(registry: State<'_, Arc<PtyRegistry>>, id: u32) -> Response {
-    Response::new(registry.take(id))
+fn pty_read(registry: State<'_, Arc<PtyRegistry>>, id: u32, client: ClientId) -> Response {
+    Response::new(registry.take_from(id, client))
 }
 
 // Every command is `async` so it runs on the async runtime, not the main
@@ -132,17 +167,8 @@ fn pty_resize(
 }
 
 #[tauri::command(async)]
-fn pty_kill(registry: State<'_, Arc<PtyRegistry>>, id: u32) -> Result<(), String> {
-    registry.kill(id)
-}
-
-/// A fresh page (F5, "Refresh", the dev loop's full reload) finds the
-/// previous page's shells still registered: React cleanup never ran on
-/// unload. The boot kills them all before the restore spawns new ones
-/// (plan-16).
-#[tauri::command(async)]
-fn pty_reset(registry: State<'_, Arc<PtyRegistry>>) {
-    registry.kill_all();
+fn pty_kill(registry: State<'_, Arc<PtyRegistry>>, key: String) -> Result<(), String> {
+    registry.kill_key(&key)
 }
 
 // ---- persistence (src/db.rs) ----
@@ -385,12 +411,14 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            pty_spawn,
+            pty_open,
+            pty_list,
+            pty_detach,
+            pty_forget,
             pty_read,
             pty_write,
             pty_resize,
             pty_kill,
-            pty_reset,
             proxy_resolve,
             projects_list,
             projects_add,
@@ -411,6 +439,14 @@ pub fn run() {
             tasks_shift,
             tasks_remove,
         ])
+        // A fresh page (F5, "Refresh", the dev loop's full reload) never ran the
+        // old page's React cleanup, so its clients are still attached. The
+        // shells stay: boot reattaches to them (plan-19).
+        .on_page_load(|webview, payload| {
+            if payload.event() == PageLoadEvent::Started {
+                webview.state::<Arc<PtyRegistry>>().detach_all();
+            }
+        })
         .on_window_event(|window, event| {
             // Kill every shell/agent once the window is really going, so
             // nothing is orphaned. Not on CloseRequested: the close guard in
