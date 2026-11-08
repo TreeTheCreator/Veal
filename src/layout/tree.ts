@@ -8,6 +8,8 @@ export interface PaneNode {
   type: "pane";
   id: number;
   cwd: string;
+  /** The key of the shell behind this pane (plan-19). Outlives the page. */
+  session: string;
 }
 
 export interface SplitNode {
@@ -22,7 +24,7 @@ export type LayoutNode = PaneNode | SplitNode;
 /** Index path from the root to a split (`[]` is the root itself). */
 export type Path = number[];
 
-/** Soft cap on simultaneous panes; the mockup's `CAP`. */
+/** Soft cap on simultaneous panes; the mockup's `CAP`. `MAX_SESSIONS` in pty.rs mirrors it. */
 export const PANE_CAP = 4;
 
 /** Leaves in DOM order. */

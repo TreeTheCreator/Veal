@@ -36,7 +36,7 @@ export const useLayout = create<LayoutState>((set, get) => ({
   addPane(cwd) {
     const { tree, nextId } = get();
     if (panes(tree).length >= PANE_CAP) return null;
-    const pane: PaneNode = { type: "pane", id: nextId, cwd };
+    const pane: PaneNode = { type: "pane", id: nextId, cwd, session: crypto.randomUUID() };
     set({ tree: insert(tree, pane), focused: nextId, nextId: nextId + 1 });
     return nextId;
   },

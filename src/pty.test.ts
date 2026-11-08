@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import libRs from "../src-tauri/src/lib.rs?raw";
 
 // The Tauri bridge, reduced to what pty.ts touches: `invoke` answers
-// pty_spawn with a fresh id and pty_read with an empty buffer, `listen`
+// pty_open with a fresh id and pty_read with an empty buffer, `listen`
 // hands back the event callbacks so a test can fire `pty-exit` and
 // `pty-data` whenever it likes.
 const invoke = vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>();
@@ -17,7 +17,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 
-const { resetSessions, resolveProxy, spawnPty } = await import("./pty");
+const { killSession, listSessions, openPty, resolveProxy } = await import("./pty");
 
 const fire = (name: string, payload: unknown) => events.get(name)!({ payload });
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -25,16 +25,19 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const empty = () => new ArrayBuffer(0);
 const bytes = (s: string) => new TextEncoder().encode(s).buffer as ArrayBuffer;
 
+/** What `pty_open` replies for a shell it just started. */
+const opened = (id: number, more: object = {}) => ({ id, client: 0, exited: false, code: null, agent: null, ...more });
+
 let nextId = 1;
 beforeEach(() => {
   invoke.mockReset();
   invoke.mockImplementation(async (cmd) =>
-    cmd === "pty_spawn" ? nextId++ : cmd === "pty_read" ? empty() : undefined,
+    cmd === "pty_open" ? opened(nextId++) : cmd === "pty_read" ? empty() : undefined,
   );
 });
 
-const opts = { cwd: "C:\\veal", cols: 80, rows: 24 };
-const spawn = () => spawnPty(opts, (_b, done) => done());
+const opts = { key: "key-1", cwd: "C:\\veal", cols: 80, rows: 24 };
+const spawn = () => openPty(opts, (_b, done) => done());
 const reads = () => invoke.mock.calls.filter(([cmd]) => cmd === "pty_read").length;
 
 describe("pty exit fan-out (plan-13)", () => {
@@ -51,17 +54,18 @@ describe("pty exit fan-out (plan-13)", () => {
 
   it("keeps an exit that arrives before the handler is registered", async () => {
     // Spawn a first session so the listeners exist, then let the *next*
-    // id exit before its spawnPty resolves.
+    // id exit before its openPty resolves.
     await spawn();
     await tick();
     const early = nextId;
-    let resolveSpawn!: (id: number) => void;
+    let resolveSpawn!: (v: unknown) => void;
     invoke.mockImplementation((cmd) =>
-      cmd === "pty_spawn" ? new Promise<number>((r) => (resolveSpawn = r)) : Promise.resolve(undefined),
+      cmd === "pty_open" ? new Promise((r) => (resolveSpawn = r)) : Promise.resolve(undefined),
     );
     const pending = spawn();
+    await tick();
     fire("pty-exit", { id: early, code: 3 });
-    resolveSpawn(early);
+    resolveSpawn(opened(early));
     const s = await pending;
     const got: Array<number | null> = [];
     s.onExit((c) => got.push(c));
@@ -87,7 +91,7 @@ describe("pty exit fan-out (plan-13)", () => {
     expect(got).toEqual([]);
 
     fire("pty-exit", { id: s.id + 1, code: 9 });
-    invoke.mockImplementation(async (cmd) => (cmd === "pty_spawn" ? s.id + 1 : undefined));
+    invoke.mockImplementation(async (cmd) => (cmd === "pty_open" ? opened(s.id + 1) : undefined));
     const t = await spawn();
     const off = t.onExit((c) => got.push(c));
     off();
@@ -100,13 +104,13 @@ describe("pty output drain (plan-15)", () => {
   /** A `pty_read` that answers `queue` in order, then empties. */
   const readQueue = (queue: ArrayBuffer[]) =>
     invoke.mockImplementation(async (cmd) =>
-      cmd === "pty_spawn" ? nextId++ : cmd === "pty_read" ? (queue.shift() ?? empty()) : undefined,
+      cmd === "pty_open" ? opened(nextId++) : cmd === "pty_read" ? (queue.shift() ?? empty()) : undefined,
     );
 
   it("drains once on spawn, so output before the reply is not lost", async () => {
     readQueue([bytes("early"), bytes("more")]);
     const got: string[] = [];
-    await spawnPty(opts, (b, done) => {
+    await openPty(opts, (b, done) => {
       got.push(new TextDecoder().decode(b));
       done();
     });
@@ -146,7 +150,7 @@ describe("pty output drain (plan-15)", () => {
     readQueue([bytes("a"), bytes("b")]);
     let release!: () => void;
     const got: string[] = [];
-    await spawnPty(opts, (b, done) => {
+    await openPty(opts, (b, done) => {
       got.push(new TextDecoder().decode(b));
       release = done;
     });
@@ -161,35 +165,130 @@ describe("pty output drain (plan-15)", () => {
     expect(reads()).toBe(3);
   });
 
-  it("signals for another id do nothing, and kill stops the loop", async () => {
+  it("signals for another id do nothing, and detach stops the loop", async () => {
     const s = await spawn();
     await tick();
     fire("pty-data", { id: s.id + 100 });
     expect(reads()).toBe(1);
-    await s.kill();
+    await s.detach();
     fire("pty-data", { id: s.id });
     expect(reads()).toBe(1);
   });
+
+  it("reads as the client it attached as", async () => {
+    invoke.mockImplementation(async (cmd) => (cmd === "pty_open" ? opened(77, { client: 5 }) : cmd === "pty_read" ? empty() : undefined));
+    await spawn();
+    await tick();
+    expect(invoke).toHaveBeenCalledWith("pty_read", { id: 77, client: 5 });
+  });
+
+  it("writes the snapshot before anything live", async () => {
+    const queue = [bytes("snapshot"), bytes("live")];
+    invoke.mockImplementation(async (cmd) =>
+      cmd === "pty_open" ? opened(nextId++, { client: 2 }) : cmd === "pty_read" ? (queue.shift() ?? empty()) : undefined,
+    );
+    const got: string[] = [];
+    await openPty(opts, (b, done) => {
+      got.push(new TextDecoder().decode(b));
+      done();
+    });
+    await tick();
+    expect(got).toEqual(["snapshot", "live"]);
+  });
 });
 
-describe("resetSessions (plan-16)", () => {
-  it("kills everything in Rust and forgets early exits and drains", async () => {
+describe("reattaching (plan-19)", () => {
+  it("detach tells Rust, and never kills", async () => {
     const s = await spawn();
+    await s.detach();
+    expect(invoke).toHaveBeenCalledWith("pty_detach", { id: s.id, client: 0 });
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "pty_kill")).toBe(false);
+  });
+
+  it("a late detach of an old terminal leaves the new one's drain alone", async () => {
+    invoke.mockImplementation(async (cmd) => (cmd === "pty_open" ? opened(500) : cmd === "pty_read" ? empty() : undefined));
+    const first = await spawn();
+    invoke.mockImplementation(async (cmd) => (cmd === "pty_open" ? opened(500, { client: 1 }) : cmd === "pty_read" ? empty() : undefined));
+    await spawn();
     await tick();
-    fire("pty-exit", { id: s.id + 50, code: 1 }); // remembered as an early exit
-    await resetSessions();
-    expect(invoke).toHaveBeenCalledWith("pty_reset", undefined);
-    // The remembered exit is gone: a session with that id sees nothing.
-    invoke.mockImplementation(async (cmd) => (cmd === "pty_spawn" ? s.id + 50 : undefined));
-    const t = await spawn();
-    const got: unknown[] = [];
-    t.onExit((c) => got.push(c));
-    await tick();
-    expect(got).toEqual([]);
-    // The old drain is gone: a signal for the old id reads nothing.
+    await first.detach();
     const before = reads();
-    fire("pty-data", { id: s.id });
-    expect(reads()).toBe(before);
+    fire("pty-data", { id: 500 });
+    expect(reads()).toBe(before + 1);
+  });
+
+  it("reports a running agent to a terminal that attaches", async () => {
+    invoke.mockImplementation(async (cmd) => (cmd === "pty_open" ? opened(600, { agent: "claude" }) : cmd === "pty_read" ? empty() : undefined));
+    const s = await spawn();
+    const got: unknown[] = [];
+    s.onAgent((a) => got.push(a));
+    expect(got).toEqual(["claude"]);
+  });
+
+  it("an answer that arrived during the open beats the reply's", async () => {
+    await spawn();
+    await tick();
+    let reply!: (v: unknown) => void;
+    invoke.mockImplementation((cmd) => (cmd === "pty_open" ? new Promise((r) => (reply = r)) : Promise.resolve(empty())));
+    const pending = spawn();
+    await tick();
+    fire("pty-agent", { id: 601, agent: null });
+    reply(opened(601, { agent: "claude" }));
+    const s = await pending;
+    const got: unknown[] = [];
+    s.onAgent((a) => got.push(a));
+    expect(got).toEqual([]);
+  });
+
+  it("delivers a tombstone's code once", async () => {
+    invoke.mockImplementation(async (cmd) => (cmd === "pty_open" ? opened(700, { exited: true, code: 3 }) : cmd === "pty_read" ? empty() : undefined));
+    const s = await spawn();
+    const got: unknown[] = [];
+    s.onExit((c) => got.push(c));
+    await tick();
+    expect(got).toEqual([3]);
+  });
+
+  it("a kill waits for an open of that key still in flight, so it cannot miss the shell", async () => {
+    let reply!: (v: unknown) => void;
+    invoke.mockImplementation((cmd) => (cmd === "pty_open" ? new Promise((r) => (reply = r)) : Promise.resolve(empty())));
+    const pending = spawn();
+    await tick();
+    const killed = killSession(opts.key);
+    await tick();
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "pty_kill")).toBe(false);
+    reply(opened(800));
+    await pending;
+    await killed;
+    expect(invoke).toHaveBeenCalledWith("pty_kill", { key: opts.key });
+  });
+
+  it("an open waits for kills in flight, which may be what makes room under the cap", async () => {
+    let finishKill!: () => void;
+    invoke.mockImplementation((cmd) =>
+      cmd === "pty_kill" ? new Promise<void>((r) => (finishKill = r)) : cmd === "pty_open" ? Promise.resolve(opened(900)) : Promise.resolve(empty()),
+    );
+    const killed = killSession("other");
+    await tick();
+    const pending = openPty({ ...opts, key: "new" }, (_b, done) => done());
+    await tick();
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "pty_open")).toBe(false);
+    finishKill();
+    await killed;
+    await pending;
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "pty_open")).toBe(true);
+  });
+
+  it("lists sessions", async () => {
+    invoke.mockImplementation(async () => [{ key: "a", cwd: "C:\\x", exited: false, code: null }]);
+    expect(await listSessions()).toEqual([{ key: "a", cwd: "C:\\x", exited: false, code: null }]);
+    expect(invoke).toHaveBeenCalledWith("pty_list", undefined);
+  });
+});
+
+describe("Rust's commands (plan-19)", () => {
+  it("no longer has a command that kills every shell on boot", () => {
+    expect(libRs).not.toContain("pty_reset");
   });
 });
 
@@ -204,17 +303,17 @@ describe("proxy arguments (plan-18)", () => {
       .sort();
   };
 
-  it("pty_spawn gets exactly the keys Rust takes", async () => {
-    await spawnPty({ ...opts, shell: "pwsh.exe", proxyMode: "manual", proxyPort: "15236", proxyBypass: ".corp" }, (_b, done) => done());
-    const args = invoke.mock.calls.find(([cmd]) => cmd === "pty_spawn")![1] as Record<string, unknown>;
-    expect(Object.keys(args).sort()).toEqual(rustParams("pty_spawn"));
+  it("pty_open gets exactly the keys Rust takes", async () => {
+    await openPty({ ...opts, shell: "pwsh.exe", proxyMode: "manual", proxyPort: "15236", proxyBypass: ".corp" }, (_b, done) => done());
+    const args = invoke.mock.calls.find(([cmd]) => cmd === "pty_open")![1] as Record<string, unknown>;
+    expect(Object.keys(args).sort()).toEqual(rustParams("pty_open"));
     expect(args).toMatchObject({ proxyMode: "manual", proxyPort: "15236", proxyBypass: ".corp" });
   });
 
   it("an unset proxy setting is sent as null, never dropped", async () => {
     await spawn();
-    const args = invoke.mock.calls.find(([cmd]) => cmd === "pty_spawn")![1] as Record<string, unknown>;
-    expect(Object.keys(args).sort()).toEqual(rustParams("pty_spawn"));
+    const args = invoke.mock.calls.find(([cmd]) => cmd === "pty_open")![1] as Record<string, unknown>;
+    expect(Object.keys(args).sort()).toEqual(rustParams("pty_open"));
     expect(args).toMatchObject({ shell: null, proxyMode: null, proxyPort: null, proxyBypass: null });
   });
 

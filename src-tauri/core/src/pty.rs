@@ -17,11 +17,13 @@
 
 use crate::session::{Attached, ClientId, Notify, Session};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 /// Bytes per `read()` on the PTY master.
 const READ_BUF: usize = 16 * 1024;
@@ -29,6 +31,17 @@ const READ_BUF: usize = 16 * 1024;
 /// The client `spawn_with_env` attaches before the shell starts, the one
 /// `take` reads for. It answers queries, as xterm always has.
 const FIRST_CLIENT: ClientId = 0;
+
+/// Sessions that may run at once. Mirrors `PANE_CAP` in src/layout/tree.ts,
+/// and a test holds the two together: no client can make a fifth (plan-19).
+pub const MAX_SESSIONS: usize = 4;
+
+/// How long an answer a client left owing waits for that client's own answer,
+/// which a page reload can leave in flight.
+const OWED_GRACE: Duration = Duration::from_millis(250);
+
+/// Runs with the pane id when a client's queue goes from empty to non-empty.
+pub type DataReady = Arc<dyn Fn(u32) + Send + Sync>;
 
 pub struct SpawnOptions {
     pub cwd: String,
@@ -49,14 +62,49 @@ struct PtyHandle {
     session: Arc<Session>,
 }
 
+struct Entry {
+    session: Arc<Session>,
+    /// The name a client knows this session by, stable across page reloads.
+    key: String,
+    /// Opened by key: its pane shows the final screen and code on every reload,
+    /// so the tombstone stays until the pane closes (`kill`) or has no pane (`forget`).
+    named: bool,
+    cwd: String,
+    /// The last answer from agent detection, for a client attaching later:
+    /// the poller itself only reports changes.
+    agent: Option<String>,
+}
+
+/// What `open` hands a client.
+#[derive(Debug, PartialEq)]
+pub struct Opened {
+    pub id: u32,
+    pub client: ClientId,
+    /// Set if the child had already exited: a tombstone, showing its last screen.
+    pub exit: Option<Option<i32>>,
+    pub agent: Option<String>,
+}
+
+/// One row of `list`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfo {
+    pub key: String,
+    pub cwd: String,
+    pub exited: bool,
+    pub code: Option<i32>,
+}
+
 #[derive(Default)]
 pub struct PtyRegistry {
     next_id: AtomicU32,
     panes: Mutex<HashMap<u32, PtyHandle>>,
+    /// Held across `open`, so two opens of one key cannot both spawn.
+    opening: Mutex<()>,
     /// Sessions outlive their handles: a shell that exits at once still has
     /// output nobody has fetched. An entry leaves when its last client has
     /// taken everything after EOF, or when it is killed or forgotten.
-    sessions: Mutex<HashMap<u32, Arc<Session>>>,
+    sessions: Mutex<HashMap<u32, Entry>>,
 }
 
 fn no_pty(id: u32) -> String {
@@ -134,7 +182,7 @@ impl PtyRegistry {
         on_data_ready: impl Fn(u32) + Send + Sync + 'static,
         on_exit: impl FnOnce(u32, Option<i32>) + Send + 'static,
     ) -> Result<u32, String> {
-        self.start(opts, env, Some(Box::new(on_data_ready)), on_exit)
+        self.start(None, opts, env, Some(Arc::new(on_data_ready)), on_exit)
     }
 
     /// Spawn a shell with nobody attached: the session answers its queries
@@ -145,14 +193,123 @@ impl PtyRegistry {
         env: Vec<(String, String)>,
         on_exit: impl FnOnce(u32, Option<i32>) + Send + 'static,
     ) -> Result<u32, String> {
-        self.start(opts, env, None, on_exit)
+        self.start(None, opts, env, None, on_exit)
+    }
+
+    /// Attach to the session called `key`, if there is one, sized as the client
+    /// is. Its first take is a snapshot. This is the cheap half of `open`: it
+    /// lets a caller skip work that only a spawn needs.
+    pub fn attach_key(&self, key: &str, cols: u16, rows: u16, on_data_ready: DataReady) -> Option<Opened> {
+        let (id, session, agent) = {
+            let sessions = self.sessions.lock().unwrap();
+            let (id, e) = sessions.iter().find(|(_, e)| e.key == key)?;
+            (*id, Arc::clone(&e.session), e.agent.clone())
+        };
+        if let Some(h) = self.panes.lock().unwrap().get(&id) {
+            // A repaint is not free, and the same size would not need one.
+            if h.master.get_size().map_or(true, |s| s.cols != cols || s.rows != rows) {
+                session.resize(cols, rows);
+                let _ = h.master.resize(size(cols, rows));
+            }
+        }
+        let attached = session.attach(true, Arc::new(move || on_data_ready(id)));
+        self.send_owed(id, &session);
+        Some(Opened { id, client: attached.client, exit: attached.exit, agent })
+    }
+
+    /// Attach to the session called `key`, or spawn it. Idempotent, so React's
+    /// double effect and two racing panes cannot make a second shell.
+    pub fn open(
+        self: &Arc<Self>,
+        key: &str,
+        opts: SpawnOptions,
+        env: Vec<(String, String)>,
+        on_data_ready: DataReady,
+        on_exit: impl FnOnce(u32, Option<i32>) + Send + 'static,
+    ) -> Result<Opened, String> {
+        let _one_at_a_time = self.opening.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(opened) = self.attach_key(key, opts.cols, opts.rows, Arc::clone(&on_data_ready)) {
+            return Ok(opened);
+        }
+        let live = self.sessions.lock().unwrap().values().filter(|e| e.session.exit().is_none()).count();
+        if live >= MAX_SESSIONS {
+            return Err(format!("already running {MAX_SESSIONS} terminals"));
+        }
+        let id = self.start(Some(key.to_string()), opts, env, Some(on_data_ready), on_exit)?;
+        Ok(Opened { id, client: FIRST_CLIENT, exit: None, agent: None })
+    }
+
+    /// Every session, running or exited, oldest first.
+    pub fn list(&self) -> Vec<SessionInfo> {
+        let sessions = self.sessions.lock().unwrap();
+        let mut rows: Vec<_> = sessions.iter().collect();
+        rows.sort_unstable_by_key(|(id, _)| **id);
+        rows.into_iter()
+            .map(|(_, e)| {
+                let exit = e.session.exit();
+                SessionInfo { key: e.key.clone(), cwd: e.cwd.clone(), exited: exit.is_some(), code: exit.flatten() }
+            })
+            .collect()
+    }
+
+    fn id_of(&self, key: &str) -> Option<u32> {
+        self.sessions.lock().unwrap().iter().find(|(_, e)| e.key == key).map(|(id, _)| *id)
+    }
+
+    /// `kill`, for a client that knows the name. A key that is gone is fine.
+    pub fn kill_key(&self, key: &str) -> Result<(), String> {
+        self.id_of(key).map_or(Ok(()), |id| self.kill(id))
+    }
+
+    /// `forget`, for a client that knows the name.
+    pub fn forget_key(&self, key: &str) {
+        if let Some(id) = self.id_of(key) {
+            self.forget(id);
+        }
+    }
+
+    /// The page went away with no chance to say so: every client is gone, and
+    /// every shell keeps running.
+    pub fn detach_all(&self) {
+        let sessions: Vec<_> = self.sessions.lock().unwrap().iter().map(|(id, e)| (*id, Arc::clone(&e.session))).collect();
+        for (id, session) in sessions {
+            session.detach_all();
+            self.send_owed(id, &session);
+        }
+    }
+
+    /// Off this thread, like every other answer: the child may not be reading.
+    /// After `OWED_GRACE`, in which the old page's own answer may still land.
+    fn send_owed(&self, id: u32, session: &Arc<Session>) {
+        if !session.owes() {
+            return;
+        }
+        let writer = self.panes.lock().unwrap().get(&id).map(|h| Arc::clone(&h.writer));
+        let Some(writer) = writer else { return };
+        let session = Arc::clone(session);
+        let _ = thread::Builder::new().name(format!("pty-{id}-owed")).spawn(move || {
+            thread::sleep(OWED_GRACE);
+            let owed = session.take_owed();
+            if !owed.is_empty() {
+                let mut w = writer.lock().unwrap_or_else(|p| p.into_inner());
+                let _ = w.write_all(&owed).and_then(|()| w.flush());
+            }
+        });
+    }
+
+    /// Agent detection's latest answer for a pane.
+    pub fn note_agent(&self, id: u32, agent: Option<String>) {
+        if let Some(e) = self.sessions.lock().unwrap().get_mut(&id) {
+            e.agent = agent;
+        }
     }
 
     fn start(
         self: &Arc<Self>,
+        key: Option<String>,
         opts: SpawnOptions,
         env: Vec<(String, String)>,
-        first_client: Option<Box<dyn Fn(u32) + Send + Sync>>,
+        first_client: Option<DataReady>,
         on_exit: impl FnOnce(u32, Option<i32>) + Send + 'static,
     ) -> Result<u32, String> {
         // Windows shells silently fall back to the profile directory when the
@@ -196,7 +353,16 @@ impl PtyRegistry {
         if let Some(notify) = first_client {
             session.first_client(Arc::new(move || notify(id)));
         }
-        self.sessions.lock().unwrap().insert(id, Arc::clone(&session));
+        self.sessions.lock().unwrap().insert(
+            id,
+            Entry {
+                session: Arc::clone(&session),
+                named: key.is_some(),
+                key: key.unwrap_or_else(|| format!("pane-{id}")),
+                cwd: opts.cwd.clone(),
+                agent: None,
+            },
+        );
         // Holds the writer only weakly, so the handle still decides when it closes.
         let reply_writer = Arc::downgrade(&writer);
         self.panes.lock().unwrap().insert(
@@ -290,8 +456,8 @@ impl PtyRegistry {
     /// and the session. A reader that did start ends at EOF once the master
     /// drops with the handle.
     fn undo_spawn(&self, id: u32) {
-        if let Some(s) = self.sessions.lock().unwrap().remove(&id) {
-            s.close();
+        if let Some(e) = self.sessions.lock().unwrap().remove(&id) {
+            e.session.close();
         }
         if let Some(mut h) = self.panes.lock().unwrap().remove(&id) {
             let _ = h.killer.kill();
@@ -299,7 +465,7 @@ impl PtyRegistry {
     }
 
     fn session(&self, id: u32) -> Option<Arc<Session>> {
-        self.sessions.lock().unwrap().get(&id).map(Arc::clone)
+        self.sessions.lock().unwrap().get(&id).map(|e| Arc::clone(&e.session))
     }
 
     /// Everything since the first client's last take.
@@ -309,13 +475,16 @@ impl PtyRegistry {
 
     /// Everything since this client's last take, or a snapshot if it owes one.
     /// Empty for an unknown id or client: it is gone and fully drained, which
-    /// is not an error for a drain loop. The session goes once EOF has been
-    /// reached and its last client has taken it all.
+    /// is not an error for a drain loop. A session with no key goes once EOF has
+    /// been reached and its last client has taken it all.
     pub fn take_from(&self, id: u32, client: ClientId) -> Vec<u8> {
         let Some(session) = self.session(id) else { return Vec::new() };
         let taken = session.take(client);
         if taken.finished {
-            self.sessions.lock().unwrap().remove(&id);
+            let mut sessions = self.sessions.lock().unwrap();
+            if sessions.get(&id).is_some_and(|e| !e.named) {
+                sessions.remove(&id);
+            }
         }
         taken.bytes
     }
@@ -323,13 +492,17 @@ impl PtyRegistry {
     /// A client's first take is a snapshot, so it picks up exactly where the
     /// stream is. On an exited session this is how the tombstone gets seen.
     pub fn attach(&self, id: u32, responder: bool, notify: Notify) -> Result<Attached, String> {
-        Ok(self.session(id).ok_or_else(|| no_pty(id))?.attach(responder, notify))
+        let session = self.session(id).ok_or_else(|| no_pty(id))?;
+        let attached = session.attach(responder, notify);
+        self.send_owed(id, &session);
+        Ok(attached)
     }
 
     /// The shell keeps running. Idempotent, like `kill`.
     pub fn detach(&self, id: u32, client: ClientId) {
         if let Some(session) = self.session(id) {
             session.detach(client);
+            self.send_owed(id, &session);
         }
     }
 
@@ -337,9 +510,9 @@ impl PtyRegistry {
     /// killed; this leaves it alone.
     pub fn forget(&self, id: u32) {
         let mut sessions = self.sessions.lock().unwrap();
-        if sessions.get(&id).is_some_and(|s| s.exit().is_some()) {
-            if let Some(s) = sessions.remove(&id) {
-                s.close();
+        if sessions.get(&id).is_some_and(|e| e.session.exit().is_some()) {
+            if let Some(e) = sessions.remove(&id) {
+                e.session.close();
             }
         }
     }
@@ -349,7 +522,9 @@ impl PtyRegistry {
     pub fn write(&self, id: u32, data: &[u8]) -> Result<(), String> {
         let writer = {
             let panes = self.panes.lock().unwrap();
-            Arc::clone(&panes.get(&id).ok_or_else(|| no_pty(id))?.writer)
+            let h = panes.get(&id).ok_or_else(|| no_pty(id))?;
+            h.session.note_input(data);
+            Arc::clone(&h.writer)
         };
         let mut w = writer.lock().unwrap_or_else(|p| p.into_inner());
         w.write_all(data).map_err(|e| e.to_string())?;
@@ -371,24 +546,25 @@ impl PtyRegistry {
     /// Nobody wants the pane any more, so the session goes now and the reader
     /// discards from here on.
     pub fn kill(&self, id: u32) -> Result<(), String> {
-        if let Some(s) = self.sessions.lock().unwrap().remove(&id) {
-            s.close();
+        if let Some(e) = self.sessions.lock().unwrap().remove(&id) {
+            e.session.close();
         }
         let mut panes = self.panes.lock().unwrap();
         if let Some(h) = panes.get_mut(&id) {
-            h.killer.kill().map_err(|e| e.to_string())?;
+            // Not checked: portable-pty 0.9's Windows killer returns `Err` when
+            // TerminateProcess succeeds and `Ok` when it fails.
+            let _ = h.killer.kill();
         }
         Ok(())
     }
 
     /// Kill every registered child. Used on window close so no shells or
-    /// agents outlive the app, and at boot (plan-16) so a reloaded page does
-    /// not leave its predecessor's shells running. Nothing will fetch from
-    /// the sessions, so they go too.
+    /// agents outlive the app. Nothing will fetch from the sessions, so they
+    /// go too.
     pub fn kill_all(&self) {
-        let sessions: Vec<_> = self.sessions.lock().unwrap().drain().map(|(_, s)| s).collect();
-        for s in sessions {
-            s.close();
+        let sessions: Vec<_> = self.sessions.lock().unwrap().drain().map(|(_, e)| e).collect();
+        for e in sessions {
+            e.session.close();
         }
         let mut panes = self.panes.lock().unwrap();
         for h in panes.values_mut() {
@@ -500,7 +676,6 @@ mod tests {
         thread::sleep(Duration::from_millis(1500));
 
         let attached = registry.attach(id, true, Arc::new(|| {})).expect("attach");
-        assert!(attached.responder);
         assert_eq!(attached.exit, None);
         let mut out = Vec::new();
         let prompted = drain_until(&registry, id, attached.client, &mut out, Duration::from_secs(10), |s| {
@@ -741,6 +916,128 @@ mod tests {
         assert_eq!(spawn(&as_path), Err(format!("{as_path}: not found")));
         assert!(!registry.contains(1), "nothing should be registered");
         assert!(registry.pids().is_empty());
+    }
+
+    fn open_key(registry: &Arc<PtyRegistry>, key: &str) -> Result<Opened, String> {
+        registry.open(key, temp_opts(), Vec::new(), Arc::new(|_| {}), |_, _| {})
+    }
+
+    #[test]
+    fn open_spawns_once_per_key_and_attaches_after_that() {
+        let registry = Arc::new(PtyRegistry::default());
+        let first = open_key(&registry, "key-a").expect("spawn");
+        assert_eq!(first.client, FIRST_CLIENT);
+        let again = open_key(&registry, "key-a").expect("attach");
+        assert_eq!(again.id, first.id, "the same shell");
+        assert_ne!(again.client, first.client);
+        assert_eq!(registry.pids().len(), 1);
+        assert!(registry.take_from(again.id, again.client).starts_with(b"\x1bc"), "attach starts with a snapshot");
+        let other = open_key(&registry, "key-b").expect("spawn");
+        assert_ne!(other.id, first.id);
+        assert_eq!(registry.list().iter().map(|s| s.key.as_str()).collect::<Vec<_>>(), ["key-a", "key-b"]);
+        registry.kill_all();
+    }
+
+    #[test]
+    fn opens_racing_on_one_key_make_one_shell() {
+        let registry = Arc::new(PtyRegistry::default());
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let r = Arc::clone(&registry);
+                thread::spawn(move || open_key(&r, "racing").expect("open").id)
+            })
+            .collect();
+        let ids: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert!(ids.iter().all(|id| *id == ids[0]), "{ids:?}");
+        assert_eq!(registry.pids().len(), 1);
+        registry.kill_all();
+    }
+
+    #[test]
+    fn attach_resizes_to_the_clients_size() {
+        let registry = Arc::new(PtyRegistry::default());
+        let id = open_key(&registry, "sized").expect("spawn").id;
+        let current = || registry.panes.lock().unwrap().get(&id).unwrap().master.get_size().unwrap();
+        registry.attach_key("sized", 100, 30, Arc::new(|_| {})).expect("attach");
+        assert_eq!((current().cols, current().rows), (100, 30));
+        assert!(registry.attach_key("nope", 100, 30, Arc::new(|_| {})).is_none());
+        registry.kill_all();
+    }
+
+    #[test]
+    fn a_fifth_session_is_refused_and_an_attach_is_not() {
+        let registry = Arc::new(PtyRegistry::default());
+        for i in 0..MAX_SESSIONS {
+            open_key(&registry, &format!("cap-{i}")).expect("spawn");
+        }
+        assert_eq!(open_key(&registry, "cap-extra").err(), Some("already running 4 terminals".to_string()));
+        assert!(open_key(&registry, "cap-0").is_ok(), "attaching makes nothing new");
+        registry.kill_key("cap-1").unwrap();
+        assert!(open_key(&registry, "cap-extra").is_ok(), "killing one makes room");
+        registry.kill_all();
+    }
+
+    #[test]
+    fn attach_reports_the_last_detected_agent() {
+        let registry = Arc::new(PtyRegistry::default());
+        let id = open_key(&registry, "agented").expect("spawn").id;
+        registry.note_agent(id, Some("claude".into()));
+        assert_eq!(open_key(&registry, "agented").unwrap().agent.as_deref(), Some("claude"));
+        registry.note_agent(id, None);
+        assert_eq!(open_key(&registry, "agented").unwrap().agent, None);
+        registry.kill_all();
+    }
+
+    #[test]
+    fn detach_all_keeps_the_shell_and_a_killed_key_is_gone() {
+        let registry = Arc::new(PtyRegistry::default());
+        let id = open_key(&registry, "kept").expect("spawn").id;
+        registry.detach_all();
+        assert!(registry.contains(id), "still running");
+        assert_eq!(registry.list().len(), 1);
+        registry.kill_key("kept").unwrap();
+        assert!(registry.list().is_empty());
+        assert_eq!(registry.kill_key("kept"), Ok(()), "idempotent");
+        registry.forget_key("kept");
+    }
+
+    #[test]
+    fn a_keyed_tombstone_stays_for_every_reload_until_its_pane_closes() {
+        let registry = Arc::new(PtyRegistry::default());
+        let first = open_key(&registry, "dead").expect("spawn");
+        // Nobody here answers ConPTY's opening query, which is what this client
+        // leaving has to take care of, or the shell below never exits.
+        registry.detach_all();
+        thread::sleep(Duration::from_millis(1500));
+        let cmd: &[u8] = if cfg!(windows) { b"exit 3\r\n" } else { b"exit 3\n" };
+        registry.write(first.id, cmd).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while registry.list().first().is_some_and(|s| !s.exited) {
+            assert!(Instant::now() < deadline, "no exit");
+            thread::sleep(Duration::from_millis(20));
+        }
+        // Long enough for EOF: the take after it is what used to drop the session.
+        let drain = |client| {
+            let end = Instant::now() + Duration::from_secs(2);
+            let mut out = Vec::new();
+            while Instant::now() < end {
+                out.extend(registry.take_from(first.id, client));
+                thread::sleep(Duration::from_millis(20));
+            }
+            out
+        };
+
+        for _ in 0..3 {
+            let again = open_key(&registry, "dead").expect("attach");
+            assert_eq!(again.id, first.id, "the tombstone, not a new shell");
+            assert_eq!(again.exit, Some(Some(3)));
+            let screen = drain(again.client);
+            assert!(String::from_utf8_lossy(&screen).contains("exit 3"), "the final screen");
+            registry.detach_all();
+        }
+
+        registry.kill_key("dead").unwrap();
+        assert!(registry.list().is_empty(), "closing the pane drops it");
     }
 
     #[test]

@@ -7,7 +7,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
-import { spawnPty, type PtySession } from "../pty";
+import { openPty, type PtySession } from "../pty";
 import { createResizeScheduler } from "../resize";
 import type { PaneNode } from "../layout/tree";
 import { basename, tilde } from "../paths";
@@ -34,7 +34,7 @@ interface Props {
 }
 
 export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: Props) {
-  const { id, cwd } = pane;
+  const { id, cwd, session: sessionKey } = pane;
   // Colour comes from detection alone (plan-17): red and named while an
   // agent runs, blue `shell` otherwise.
   const accent = agent ? "agent" : "shell";
@@ -184,10 +184,14 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
     };
     // xterm's write callback fires once the bytes are parsed; the next
     // fetch waits for it (plan-15).
-    spawnPty({ cwd, cols, rows, shell, proxyMode, proxyPort, proxyBypass }, (bytes, done) => term.write(bytes, done))
+    // Attaches if this pane's shell is already running (a reload), and then the
+    // first bytes are a snapshot of its screen. Otherwise this starts the shell.
+    openPty({ key: sessionKey, cwd, cols, rows, shell, proxyMode, proxyPort, proxyBypass }, (bytes, done) =>
+      term.write(bytes, done),
+    )
       .then((s) => {
         if (disposed) {
-          s.kill().catch(() => {});
+          s.detach().catch(() => {});
           return;
         }
         session = s;
@@ -219,11 +223,12 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
       observer.disconnect();
       resizer.cancel();
       disposables.forEach((d) => d());
-      session?.kill().catch(() => {});
+      // Only detaches: the shell ends when the pane leaves the layout (sessions.ts).
+      session?.detach().catch(() => {});
       term.dispose();
       termRef.current = null;
     };
-  }, [id, cwd]);
+  }, [id, cwd, sessionKey]);
 
   // Plan-11: xterm's palette follows the app's tokens. Declared after the
   // mount effect so the first run sees the terminal; re-runs on mode change.

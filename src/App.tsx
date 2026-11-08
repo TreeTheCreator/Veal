@@ -2,7 +2,8 @@
 // Boot loads settings + projects from SQLite, restores the pane layout (or
 // opens one shell in the active project), then starts writing layout changes
 // back. All views stay mounted; inactive ones are hidden with `visibility`
-// so the terminal container keeps its size and no PTY is ever unmounted.
+// so the terminal container keeps its size. Shells outlive the page: a reload
+// finds them running and reattaches.
 import { useCallback, useEffect, useState } from "react";
 import { homeDir } from "@tauri-apps/api/path";
 import { Logo } from "./Icon";
@@ -18,12 +19,14 @@ import { Toast } from "./components/Toast";
 import { UpdateCard } from "./components/UpdateCard";
 import { parseAllFiles, startFilesPersistence } from "./files/persist";
 import { useFiles } from "./files/store";
-import { LAYOUT_KEY, parseLayout, startLayoutPersistence } from "./layout/persist";
+import { LAYOUT_KEY, parseLayout, serializeLayout, startLayoutPersistence } from "./layout/persist";
+import { reconcile, startSessionKiller } from "./layout/sessions";
 import { selectPaneCount, useLayout } from "./layout/store";
-import { PANE_CAP } from "./layout/tree";
+import { PANE_CAP, panes } from "./layout/tree";
 import { setHome, tilde } from "./paths";
 import { selectActive, useProjects } from "./projects/store";
-import { resetSessions } from "./pty";
+import { db } from "./db";
+import { forgetSession, killSession, listSessions } from "./pty";
 import { useSettings } from "./settings/store";
 import { isView, TAB_LABEL, TAB_VIEWS, useUi, VIEW_KEY, viewForShortcut } from "./ui";
 import { startWatching } from "./watch";
@@ -33,25 +36,40 @@ import { startWatching } from "./watch";
 let bootStarted = false;
 
 async function boot() {
-  const [settings] = await Promise.all([
+  const [settings, sessions] = await Promise.all([
     useSettings.getState().load(),
+    // Shells the page before this one (F5, "Refresh") left running.
+    listSessions().catch((e) => {
+      console.warn("pty_list", e);
+      return [];
+    }),
     useProjects.getState().load(),
     // Paths under the profile display as `~`; shown whole until this resolves.
     homeDir().then(setHome, (e) => console.warn("homeDir", e)),
-    // Shells the page before this one (F5, "Refresh") left running.
-    resetSessions().catch((e) => console.warn("pty_reset", e)),
   ]);
   const view = settings[VIEW_KEY];
   if (isView(view)) useUi.setState(view === "settings" ? { view } : { view, lastTab: view });
   const restoreOn = useSettings.getState().restoreLayout;
   const restored = restoreOn ? parseLayout(settings[LAYOUT_KEY]) : null;
   if (restoreOn) useFiles.getState().restore(parseAllFiles(settings));
-  if (restored) {
-    useLayout.setState(restored);
-  } else {
+  const { tree, nextId, forget } = reconcile(restored?.tree ?? null, restored?.nextId ?? 1, sessions);
+  for (const key of forget) forgetSession(key).catch((e) => console.warn("pty_forget", e));
+  const leaves = panes(tree);
+  const focused = restored && leaves.some((p) => p.id === restored.focused) ? restored.focused : (leaves[0]?.id ?? null);
+  useLayout.setState({ tree, focused, nextId });
+  // From here on, a pane leaving the layout ends its shell. Installed after the
+  // restore, though the restore removes nothing it should act on anyway.
+  startSessionKiller((key) => killSession(key).catch((e) => console.warn("pty_kill", e)));
+  if (!tree) {
     const active = selectActive(useProjects.getState());
     if (active) useLayout.getState().addPane(active.path);
   }
+  // Written now, not on the next change: a pane given a new key by this restore
+  // would otherwise get yet another one on the next reload, and its shell would
+  // come back as an extra pane.
+  await db
+    .settingsSet(LAYOUT_KEY, serializeLayout(useLayout.getState()))
+    .catch((e) => console.warn("layout save", e));
   startLayoutPersistence();
   startFilesPersistence();
   startWatching();
