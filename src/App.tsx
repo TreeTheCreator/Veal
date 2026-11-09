@@ -26,8 +26,9 @@ import { PANE_CAP, panes } from "./layout/tree";
 import { setHome, tilde } from "./paths";
 import { selectActive, useProjects } from "./projects/store";
 import { db } from "./db";
-import { forgetSession, killSession, listSessions } from "./pty";
+import { forgetSession, killSession, listSessions, parseColor, setTheme } from "./pty";
 import { useSettings } from "./settings/store";
+import { terminalTheme, useEffectiveMode } from "./theme";
 import { isView, TAB_LABEL, TAB_VIEWS, useUi, VIEW_KEY, viewForShortcut } from "./ui";
 import { startWatching } from "./watch";
 
@@ -85,6 +86,16 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [adding, setAdding] = useState(false);
   const closeAdd = useCallback(() => setAdding(false), []);
+  const mode = useEffectiveMode();
+
+  // The daemon answers OSC 10/11 for shells with no window attached, from the
+  // colours reported here (plan-19 5.10). Once, not per pane.
+  useEffect(() => {
+    const t = terminalTheme();
+    const fg = parseColor(t.foreground);
+    const bg = parseColor(t.background);
+    if (fg && bg) setTheme(fg, bg).catch((e) => console.warn("pty_theme", e));
+  }, [mode]);
 
   useEffect(() => {
     if (bootStarted) return;

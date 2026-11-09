@@ -7,7 +7,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
-import { openPty, type PtySession } from "../pty";
+import { onDaemonLost, openPty, type PtySession } from "../pty";
 import { createResizeScheduler } from "../resize";
 import type { PaneNode } from "../layout/tree";
 import { basename, tilde } from "../paths";
@@ -45,6 +45,12 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
   const termRef = useRef<Terminal | null>(null);
   const [exitCode, setExitCode] = useState<number | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
+  // The background service stopped (plan-19 5.10). Restart remounts the
+  // terminal, and the open spawns afresh: the new daemon has never heard of
+  // this key. Not automatic: the agents' work state is gone, and the user
+  // should know.
+  const [lost, setLost] = useState(false);
+  const [generation, setGeneration] = useState(0);
   // Sidebar project name for the header; basename when the pane is elsewhere.
   const projectName = useProjects((s) => projectForCwd(s.projects, cwd)?.name ?? basename(cwd));
   const mode = useEffectiveMode();
@@ -134,6 +140,11 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
 
     let session: PtySession | null = null;
     let disposed = false;
+    const offLost = onDaemonLost(() => {
+      if (disposed) return;
+      session = null;
+      setLost(true);
+    });
     const disposables: Array<() => void> = [() => host.removeEventListener("paste", onPaste, true)];
 
     // Wire input before spawning. ConPTY's conhost opens with a cursor-position
@@ -220,6 +231,7 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
 
     return () => {
       disposed = true;
+      offLost();
       observer.disconnect();
       resizer.cancel();
       disposables.forEach((d) => d());
@@ -228,7 +240,7 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
       term.dispose();
       termRef.current = null;
     };
-  }, [id, cwd, sessionKey]);
+  }, [id, cwd, sessionKey, generation]);
 
   // Plan-11: xterm's palette follows the app's tokens. Declared after the
   // mount effect so the first run sees the terminal; re-runs on mode change.
@@ -266,8 +278,26 @@ export function TerminalPane({ pane, agent, focused, style, onFocus, onClose }: 
         </button>
       </div>
       <div className="pane-term" ref={hostRef} />
-      {error && <div className="pane-footer error">failed to start shell: {error}</div>}
-      {exitCode !== undefined && (
+      {lost ? (
+        <div className="pane-footer error">
+          background service stopped{" "}
+          <button
+            className="btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              setLost(false);
+              setError(null);
+              setExitCode(undefined);
+              setGeneration((g) => g + 1);
+            }}
+          >
+            Restart
+          </button>
+        </div>
+      ) : (
+        error && <div className="pane-footer error">failed to start shell: {error}</div>
+      )}
+      {!lost && exitCode !== undefined && (
         <div className="pane-footer">process exited (code {exitCode ?? "?"})</div>
       )}
     </div>
