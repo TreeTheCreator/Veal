@@ -30,7 +30,9 @@ enum Out {
     Shutdown,
 }
 
-/// The clients one connection holds.
+/// The clients one connection holds. A page can hold two attaches to one
+/// session (React's double effect), and either may be the one that stays, so
+/// "current" is always the newest one still attached.
 #[derive(Default)]
 struct Held {
     /// Each key's current client, for `resize`, `resync` and `detach`.
@@ -39,6 +41,32 @@ struct Held {
     by_id: HashMap<u32, ClientId>,
     /// Every client still attached, for cleanup when the pipe closes.
     all: HashSet<(u32, ClientId)>,
+}
+
+impl Held {
+    /// Record an attach. It becomes current unless a newer one already is.
+    fn add(&mut self, key: String, sid: u32, client: ClientId) {
+        self.all.insert((sid, client));
+        if self.by_id.get(&sid).is_none_or(|&c| c < client) {
+            self.by_id.insert(sid, client);
+            self.by_key.insert(key, (sid, client));
+        }
+    }
+
+    /// Drop an attach. If it was current, the newest one left takes over;
+    /// returns the session if that happened, so its queue gets taken.
+    fn remove(&mut self, key: &str, sid: u32, client: ClientId) -> Option<u32> {
+        self.all.remove(&(sid, client));
+        if self.by_id.get(&sid) != Some(&client) {
+            return None;
+        }
+        self.by_id.remove(&sid);
+        self.by_key.remove(key);
+        let next = self.all.iter().filter(|(s, _)| *s == sid).map(|(_, c)| *c).max()?;
+        self.by_id.insert(sid, next);
+        self.by_key.insert(key.to_string(), (sid, next));
+        Some(sid)
+    }
 }
 
 pub struct State {
@@ -282,15 +310,14 @@ fn dispatch(state: &Arc<State>, tx: &mpsc::UnboundedSender<Out>, held: &Arc<Mute
         }
         ClientMsg::Detach { key, client } => {
             let mut h = held.lock().unwrap();
-            let found = h.all.iter().find(|(_, c)| *c == client).copied();
-            if let Some((sid, c)) = found.filter(|(sid, _)| state.registry.key_of(*sid).is_none_or(|k| k == key)) {
-                h.all.remove(&(sid, c));
-                if h.by_key.get(&key) == Some(&(sid, c)) {
-                    h.by_key.remove(&key);
-                    h.by_id.remove(&sid);
-                }
+            let sid = state.registry.id_for(&key).or_else(|| h.by_key.get(&key).map(|(s, _)| *s));
+            if let Some(sid) = sid.filter(|s| h.all.contains(&(*s, client))) {
+                let promoted = h.remove(&key, sid, client);
                 drop(h);
-                state.registry.detach(sid, c);
+                state.registry.detach(sid, client);
+                if let Some(sid) = promoted {
+                    let _ = tx.send(Out::Ready(sid));
+                }
             }
             answer(Ok(ReplyBody::Ok));
         }
@@ -357,12 +384,7 @@ where
                 }
             }
             Out::Opened { key, id: sid, client, reply } => {
-                {
-                    let mut h = held.lock().unwrap();
-                    h.by_key.insert(key, (sid, client));
-                    h.by_id.insert(sid, client);
-                    h.all.insert((sid, client));
-                }
+                held.lock().unwrap().add(key, sid, client);
                 if wr.write_all(&reply).await.is_err() {
                     break;
                 }
@@ -567,6 +589,26 @@ mod tests {
             Ok(ReplyBody::Opened { session, client, .. }) => (session, client),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn the_newest_attach_left_is_current() {
+        let mut h = Held::default();
+        h.add("k".into(), 1, 0);
+        h.add("k".into(), 1, 1);
+        assert_eq!(h.by_id.get(&1), Some(&1));
+        // The newer one goes first: the older takes over.
+        assert_eq!(h.remove("k", 1, 1), Some(1));
+        assert_eq!(h.by_id.get(&1), Some(&0));
+        assert_eq!(h.by_key.get("k"), Some(&(1, 0)));
+        // A late record of an older attach does not displace a newer one.
+        h.add("k".into(), 1, 2);
+        h.add("k".into(), 1, 0);
+        assert_eq!(h.by_id.get(&1), Some(&2));
+        // A non-current one going changes nothing.
+        assert_eq!(h.remove("k", 1, 0), None);
+        assert_eq!(h.remove("k", 1, 2), None, "nothing left to take over");
+        assert!(h.by_id.is_empty() && h.by_key.is_empty() && h.all.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]

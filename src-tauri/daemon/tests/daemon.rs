@@ -58,6 +58,26 @@ fn exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_veal-daemon"))
 }
 
+/// Shuts the test's daemon down when the test ends, passed or not, so a
+/// failure does not leave a daemon holding the exe open for the next build.
+struct Cleanup(String);
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let name = self.0.clone();
+        let _ = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async {
+                let sink = Arc::new(Screen::default()) as Arc<dyn Sink>;
+                if let Ok(c) = Client::connect(&name, "cleanup", "test", sink).await {
+                    c.shutdown(Duration::from_secs(3)).await;
+                }
+            });
+        })
+        .join();
+    }
+}
+
 fn unique(tag: &str) -> String {
     let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     format!(r"\\.\pipe\veal-it-{tag}-{}-{n}", std::process::id())
@@ -121,6 +141,7 @@ async fn pipe_gone(name: &str, secs: u64) -> bool {
 #[tokio::test(flavor = "multi_thread")]
 async fn reattach_restores_the_screen() {
     let name = unique("reattach");
+    let _cleanup = Cleanup(name.clone());
     let (c, screen) = start(&name).await;
     let (s, _) = opened(c.request(spawn_msg("a")).await);
     ready(&c, &screen, s).await;
@@ -140,9 +161,28 @@ async fn reattach_restores_the_screen() {
     c2.shutdown(Duration::from_secs(3)).await;
 }
 
+/// Ctrl+C reaches the pane's foreground program. A daemon started in its own
+/// process group would pass on "Ctrl+C disabled" to every shell.
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_c_stops_the_foreground_program() {
+    let name = unique("ctrlc");
+    let _cleanup = Cleanup(name.clone());
+    let (c, screen) = start(&name).await;
+    let (s, _) = opened(c.request(spawn_msg("c")).await);
+    ready(&c, &screen, s).await;
+    c.input(s, b"ping -t 127.0.0.1\r\n".to_vec());
+    screen.wait_for(s, "Reply from", 10).await;
+    c.input(s, vec![3]);
+    c.input(s, b"set /a 70+7\r\n".to_vec());
+    // `77` is only in the output, never in the echoed input.
+    screen.wait_for(s, "77", 10).await;
+    c.shutdown(Duration::from_secs(3)).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn spawn_is_idempotent_across_connections() {
     let name = unique("idem");
+    let _cleanup = Cleanup(name.clone());
     let (c1, _) = start(&name).await;
     let (c2, _) = start(&name).await;
     let (a, _) = opened(c1.request(spawn_msg("same")).await);
@@ -158,6 +198,7 @@ async fn spawn_is_idempotent_across_connections() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fifth_session_is_refused() {
     let name = unique("cap");
+    let _cleanup = Cleanup(name.clone());
     let (c, _) = start(&name).await;
     for k in ["1", "2", "3", "4"] {
         opened(c.request(spawn_msg(k)).await);
@@ -170,6 +211,7 @@ async fn a_fifth_session_is_refused() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_exit_while_detached_is_a_tombstone() {
     let name = unique("tomb");
+    let _cleanup = Cleanup(name.clone());
     let (c, screen) = start(&name).await;
     let (s, _) = opened(c.request(spawn_msg("t")).await);
     ready(&c, &screen, s).await;
@@ -189,6 +231,7 @@ async fn an_exit_while_detached_is_a_tombstone() {
 #[tokio::test(flavor = "multi_thread")]
 async fn resync_gives_a_snapshot() {
     let name = unique("resync");
+    let _cleanup = Cleanup(name.clone());
     let (c, screen) = start(&name).await;
     let (s, _) = opened(c.request(spawn_msg("r")).await);
     ready(&c, &screen, s).await;
@@ -216,6 +259,7 @@ async fn flood(c: &Client, screen: &Screen, s: u32, tag: &str, lines: u32) -> Du
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stalled_client_does_not_slow_the_others() {
     let name = unique("stall");
+    let _cleanup = Cleanup(name.clone());
     let (c, screen) = start(&name).await;
     let (s, _) = opened(c.request(spawn_msg("flood")).await);
     ready(&c, &screen, s).await;
@@ -240,6 +284,7 @@ async fn a_stalled_client_does_not_slow_the_others() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bad_frame_closes_only_its_connection() {
     let name = unique("bad");
+    let _cleanup = Cleanup(name.clone());
     let (c, screen) = start(&name).await;
     let (s, _) = opened(c.request(spawn_msg("b")).await);
     ready(&c, &screen, s).await;
@@ -260,6 +305,7 @@ async fn a_bad_frame_closes_only_its_connection() {
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_ends_the_shells_and_the_daemon() {
     let name = unique("shutdown");
+    let _cleanup = Cleanup(name.clone());
     let (c, _) = start(&name).await;
     opened(c.request(spawn_msg("x")).await);
     opened(c.request(spawn_msg("y")).await);
@@ -270,6 +316,7 @@ async fn shutdown_ends_the_shells_and_the_daemon() {
 #[tokio::test(flavor = "multi_thread")]
 async fn idle_daemon_exits() {
     let name = unique("idle");
+    let _cleanup = Cleanup(name.clone());
     let mut child = std::process::Command::new(exe())
         .args(["--pipe", &name, "--idle-ms", "500", "--build", "test"])
         .stdin(std::process::Stdio::null())
@@ -301,6 +348,7 @@ async fn idle_daemon_exits() {
 #[tokio::test(flavor = "multi_thread")]
 async fn two_racing_starts_share_one_daemon() {
     let name = unique("race");
+    let _cleanup = Cleanup(name.clone());
     let (n1, n2) = (name.clone(), name.clone());
     let a = tokio::spawn(async move { start(&n1).await });
     let b = tokio::spawn(async move { start(&n2).await });

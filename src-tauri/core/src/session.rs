@@ -473,6 +473,8 @@ struct Client {
     /// start like this, and a client over the cap ends up like this.
     resync: bool,
     responder: bool,
+    /// It attached as a responder, so it can take the role back.
+    asked: bool,
     notify: Notify,
 }
 
@@ -614,6 +616,7 @@ impl Session {
                 notified: !fresh,
                 resync: !fresh,
                 responder,
+                asked: responder,
                 notify: Arc::clone(&notify),
             },
         );
@@ -635,9 +638,20 @@ impl Session {
     }
 
     /// The session keeps running. Queries sent to this client and not yet
-    /// answered are lost (plan-19, section 3).
+    /// answered are lost (plan-19, section 3). If it was the responder, the
+    /// newest client left that asked to be one takes the role back: one page
+    /// can attach twice (React's double effect), and when the newer attach is
+    /// the one that goes, the older one's xterm is still answering. Without
+    /// this the session would answer too, and a second cursor report reads as
+    /// F3, which PowerShell takes as a search that swallows the next key.
     pub fn detach(&self, client: ClientId) {
-        self.lock().clients.all.remove(&client);
+        let mut inner = self.lock();
+        let Some(gone) = inner.clients.all.remove(&client) else { return };
+        if gone.responder {
+            if let Some((_, c)) = inner.clients.all.iter_mut().filter(|(_, c)| c.asked).max_by_key(|(id, _)| **id) {
+                c.responder = true;
+            }
+        }
     }
 
     /// Every client went away at once: a page reload, or a lost connection.
@@ -1159,6 +1173,24 @@ mod tests {
         assert!(s.feed(DSR).is_empty(), "a late detach of the old one changes nothing");
         s.detach(new);
         assert!(!s.feed(DSR).is_empty(), "nobody left: the session answers");
+    }
+
+    /// What React's double effect does: two attaches, and the newer goes first.
+    #[test]
+    fn the_older_responder_takes_the_role_back_when_the_newer_goes() {
+        let s = Session::new(40, 8);
+        let old = s.first_client(quiet());
+        assert!(s.feed(DSR).is_empty(), "the first client answers");
+        let new = s.attach(true, quiet()).client;
+        s.take(new);
+        s.detach(new);
+        assert!(!s.owes(), "the old client got the query and is answering it");
+        assert!(s.feed(DSR).is_empty(), "and answers the next one too");
+        s.take(old);
+        let quiet_one = s.attach(false, quiet()).client;
+        s.take(quiet_one);
+        s.detach(old);
+        assert!(!s.feed(DSR).is_empty(), "a non-responder never takes the role");
     }
 
     #[test]

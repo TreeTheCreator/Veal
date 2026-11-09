@@ -203,7 +203,7 @@ pub fn start(registry: Arc<PtyRegistry>, sink: impl Fn(PaneAgent) + Send + 'stat
                     let table = snapshot(&mut sys);
                     if cfg!(debug_assertions) {
                         let ms = t.elapsed().as_secs_f64() * 1000.0;
-                        if ms > 10.0 {
+                        if ms > 50.0 {
                             crate::vlog!("[agents] refresh {} procs in {ms:.1} ms", table.len());
                         }
                     }
