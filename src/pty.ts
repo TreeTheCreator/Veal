@@ -185,6 +185,14 @@ export function setTheme(fg: Rgb, bg: Rgb): Promise<void> {
   return invoke("pty_theme", { fg, bg });
 }
 
+/**
+ * Just before the window goes: `keep` leaves every shell running in the
+ * background service, otherwise closing ends them (plan-19 section 8).
+ */
+export function setCloseMode(keep: boolean): Promise<void> {
+  return invoke("pty_close_mode", { keep });
+}
+
 /** One row of `pty_list`: what is running, whatever the page knows about. */
 export function listSessions(): Promise<SessionInfo[]> {
   return invoke<SessionInfo[]>("pty_list");
