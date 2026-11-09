@@ -3,6 +3,7 @@
 
 pub mod agents;
 pub mod log;
+pub mod pipe;
 pub mod protocol;
 pub mod proxy;
 pub mod pty;
