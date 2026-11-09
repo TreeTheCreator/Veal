@@ -10,7 +10,7 @@ edition = "2021"
 # This manifest is the workspace root as well as the app, so `target/` stays
 # where scripts/release.mjs looks for the installer (plan-19).
 [workspace]
-members = ["core"]
+members = ["core", "daemon"]
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
