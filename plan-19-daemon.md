@@ -565,132 +565,463 @@ listener in front of them, not a rewrite.
   `build` check in `hello` (section 8) then replaces a stale idle daemon. Release
   builds launch the file next to `veal.exe` directly.
 
-**5.1 Logger** (`core/log.rs`). A small file logger written for Veal, with no new
-crate: `%LOCALAPPDATA%\com.veal.app\logs\daemon.log`, rotated to `.1` at 1 MB, and
-never panics. The two `eprintln!`s (`pty.rs:420`, `agents.rs:207`/`330`) go
-through it. Test: rotation, and that a write to a missing folder is a no-op.
+- **D7. `spawn` attaches the caller.** It is today's `PtyRegistry::open`: it
+  attaches to the key or spawns it, and the reply has the same shape as
+  `attach`'s. ConPTY's opening query needs a responder attached before the shell
+  starts (`FIRST_CLIENT`), so a separate `spawn` followed by `attach` would race
+  it. `attach` stays for a client that must never spawn, which is plan-20's phone.
+- **D8. A snapshot has its own frame kind.** `Taken` gains `snapshot: bool`, and
+  the daemon sends `snapshot` instead of `output` when it is set. After a
+  `resync`, the bridge drops `output` frames until a `snapshot` frame arrives, so
+  bytes already on the pipe before the resync cannot land after the reset.
+- **D9. Input has one writer thread per session in the daemon.** A write to a
+  child that has stopped reading blocks (plan-12). On the connection's read loop
+  that would stall every pane; on a thread pool it would reorder keystrokes. So
+  each session gets a channel and a thread, made at spawn, which end with the
+  session. Input is a binary frame, so a paste is not JSON-escaped.
+- **D10. The registry id goes on the wire, and the app keeps its own ids.**
+  `output`, `snapshot` and `input` frames carry the daemon's `u32` registry id,
+  which saves sending a UUID per chunk. The app gives each pane its own id from a
+  counter that never resets, so a restarted daemon's id 1 can never reach a JS
+  map that still holds the old id 1.
 
-**5.2 Protocol** (`core/protocol.rs`, pure). The frame codec, plus
-`ClientMsg`/`DaemonMsg` enums with serde. `PROTOCOL` is a const, and `MAX_FRAME`
-limits allocation from a bad length. Output and snapshot frames are binary:
-`kind`, `u32 session`, bytes. Session numbers are per connection and map to keys,
-which saves sending a UUID per chunk. Tests: round trips, an oversized length, a
-truncated frame, an unknown kind, all errors with no panic.
+Order: 5.1–5.4 do not depend on each other. 5.5 needs 5.1, 5.2 and 5.4. 5.6
+needs 5.2 and 5.4. 5.7 needs 5.6. 5.8 needs 5.5–5.7. 5.11 has to land before 5.9,
+or no dev window can start a daemon. 5.10 comes after 5.9. Each task is one
+commit, and `cargo test --workspace`, `pnpm test` and clippy pass after each.
 
-**5.3 Spawn environment** (`pty.rs` `start`). `CreateEnvironmentBlock` with the
-process token and `bInherit = FALSE`, then `env_clear()` and set each variable.
-After that come `TERM`, `VEAL_PANE`, the proxy, and the spawn's optional `env`
-overlay. Debug builds send their whole environment as the overlay, so a dev
-shell's variables still reach panes. Behind a `cfg(windows)` function, falling
-back to the inherited environment if the call fails (logged). Test: a variable
-set only in the test process is missing with no overlay and present with one.
-Needs `windows-sys` `Win32_System_Environment`, `Win32_System_Threading`,
-`Win32_Security`.
+### 5.1 Logger (`core/src/log.rs`)
 
-**5.4 Pipe name and security** (`core/pipe.rs`).
-- The current user's SID as a string: `OpenProcessToken`, `TokenUser`,
-  `ConvertSidToStringSidW`.
-- The pipe name `veal-<SID>`, or `veal-dev-<SID>` with `cfg(debug_assertions)`.
-  `VEAL_PIPE` overrides it, for tests.
-- Server: tokio `ServerOptions` with `first_pipe_instance(true)` for the first
-  instance only, `reject_remote_clients(true)`, and a DACL that grants only the
-  user's SID, via `create_with_security_attributes_raw`.
-- Client: `GetNamedPipeServerProcessId`, then that process's token user must
-  equal ours, before any bytes are sent.
-- Tests: the name format, the owner check passing on our own pipe. The
-  other-user case is acceptance 14, by hand.
+A small file logger written for Veal, with no new crate.
 
-**5.5 Daemon crate** (`src-tauri/daemon`, `veal-daemon`, added to `[workspace]`).
-`windows_subsystem = "windows"`, a tokio runtime, and one `Arc<PtyRegistry>`.
-- **Accept loop.** It keeps a pending server instance ready at all times. If
-  `first_pipe_instance` fails, another daemon won: log and exit 0.
-- **Per connection.** It reads `hello` first and checks the protocol. Then it
-  dispatches: `list`, `spawn` (on a blocking task, as in D1), `attach`, `detach`,
-  `write`, `resize`, `kill`, `forget`, `theme`, `resync`, `shutdown`. One writer
-  task owns the pipe's write half, fed by an unbounded channel of frames. A
-  session's `Notify` sends a "take from (session, client)" request to that
-  channel, so the PTY reader never touches the pipe.
-- **When a connection drops,** all its clients are detached, which is today's
-  `detach_all` scoped to one connection. Owed answers are sent as before.
-- **Broadcasts.** `exit`, `agent`, `session_added` and `session_removed` go to
-  every connection.
-- **`shutdown`** runs `kill_all`, waits for the waiters with a cap, then exits.
-- **Idle exit.** A 1 s tick exits after 30 s with no live sessions and no
-  connections.
-- **Panics.** A panic in a connection task ends that connection only, and is
-  logged.
-- **Tests:** unit tests for the dispatch against a `PtyRegistry` with the pipe
-  left out.
+1. API: `log::init(name: &str)` sets the file once, through a `OnceLock<Mutex<File>>`.
+   `vlog!(...)` formats the time, the thread name and the message. Before `init`,
+   or after any I/O error, it is a no-op.
+2. The path is `%LOCALAPPDATA%\com.veal.app\logs\<name>.log`, and the folder is
+   created on `init`. When a write takes the file past 1 MB, rename it to
+   `<name>.log.1`, replacing the old one, and reopen. Only two files ever exist.
+3. Never panic: every `Result` is dropped, and a poisoned lock is used anyway.
+4. Replace `pty.rs:420` and `agents.rs:207` and `:330` with `vlog!`, still only
+   under `cfg(debug_assertions)` where they are now.
+5. The app calls `log::init("app")` in `setup`, and the daemon calls
+   `log::init("daemon")` first thing.
 
-**5.6 Client** (`core/client.rs`). Connect, check the owner, send `hello`. Pending
-requests are a map from `id` to oneshot. One reader task decodes frames and
-routes them: replies to their oneshot, `output` to a per-session sink callback,
-and events to an event callback. A closed pipe fails every pending request and
-raises one `Disconnected` event.
+Tests, with a test-only `init_at(path)`: rotation at the limit leaves exactly
+`.log` and `.log.1`, a missing or unwritable folder does nothing, and a write
+before `init` does nothing.
 
-**5.7 Starting the daemon** (`core/client.rs`, `launch`). Try to connect. On
-`NotFound`, launch the daemon:
-- Release builds use the exe next to `current_exe()`; debug builds use the copy
-  from D6.
-- Flags: `CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW | DETACHED_PROCESS`. If
-  that fails with access denied, retry without breakaway and log it (a known
-  unknown).
-- Retry connecting every 50 ms for up to 2 s.
-- `hello` mismatch, debug builds: if the stale daemon has no sessions, send
-  `shutdown`, wait for it to exit, and relaunch. Release builds: return a typed
-  error. The UI for it waits for step 6. Until then the pane shows the error text.
+Done when: no `eprintln!` is left in `core/` (grep), and the tests pass.
 
-**5.8 Integration tests** (`daemon/tests/`). A real daemon on a unique `VEAL_PIPE`,
-driven by `client.rs`:
-- Spawn, detach, reconnect, attach, and compare screens.
-- Idempotent spawn by key, and the cap.
-- `exit 3` while detached is a tombstone on reattach.
-- `resync` after a forced overflow.
-- Two connections: one stalled, one fast, and the child not slowed.
-- `shutdown`, and idle exit with the timeout shortened through an env var.
-- A bad frame from a client drops that connection only.
-- Existing `pty.rs` and `session.rs` tests are unchanged.
+### 5.2 Protocol (`core/src/protocol.rs`)
 
-**5.9 The bridge** (`src-tauri/src/lib.rs`). This is the switch.
-- `run()` connects, or launches the daemon (5.7), in `setup` and manages a
-  `Bridge`. The `pty_*` commands keep their names and arguments, and forward.
-  `PtyRegistry` and `agents::start` leave the app.
-- The app keeps its own `u32` id per key, so `pty.ts`'s id-keyed maps, `pty-data`,
-  `pty-exit` and `pty-agent` stay as they are. Each pane gets an app-side
-  `Shared` outbox, capped at `OUTBOX_CAP`.
-- The read loop never blocks. On overflow it clears that pane's outbox and sends
-  `resync` once JS has drained it. The snapshot then starts with `ESC c`, which
-  needs no change in `pty.ts`.
-- `on_page_load(Started)` sends `detach` for this window's clients. `Destroyed`
-  sends `shutdown` (D4).
-- `Disconnected` emits `pty-daemon-lost`.
-- Remove: the `kill_all` on `Destroyed`, and the app's `veal-core::pty` import
-  except types.
-- Payload test: still reads names from `lib.rs`.
+Pure code with no I/O, so it is tested in isolation.
 
-**5.10 UI** (`pty.ts`, `TerminalPane.tsx`).
-- On `pty-daemon-lost`, every pane shows `background service stopped` and a
-  Restart button. Restart reconnects or relaunches, then `pty_open`s the same key
-  in the saved cwd.
-- The theme is reported with `pty_theme` on open and on mode change
-  (`TerminalPane.tsx:237`), so OSC 10/11 are right while headless.
-- Tests: the lost state, and that Restart reopens with the same key.
+1. Frame: `u32 len` (LE, counting the kind byte and the payload), `u8 kind`, then
+   the payload. `MAX_FRAME` is 16 MB. `decode(buf: &mut BytesMut-like Vec) ->
+   Result<Option<Frame>, ProtoError>` takes one frame off the front, or returns
+   `None` if more bytes are needed. `encode(&Frame) -> Vec<u8>`. A length over
+   `MAX_FRAME` is an error before any allocation.
+2. Kinds: `1` control (JSON), `2` output, `3` snapshot, `4` input. Kinds 2–4 are
+   `u32 session` (LE) and then raw bytes.
+3. `PROTOCOL: u32 = 1`.
+4. `ClientMsg`, serde-tagged `{"t": "...", "id": n, ...}`:
+   - `Hello { protocol, build, role }`
+   - `List`
+   - `Spawn { key, cwd, cols, rows, shell, proxy_mode, proxy_port, proxy_bypass, env: Option<Vec<(String,String)>> }`
+   - `Attach { key, cols, rows, responder, controller }`
+   - `Detach { key }`, `Resize { key, cols, rows }`, `Kill { key }`, `Forget { key }`, `Resync { key }`
+   - `Theme { fg, bg }`, `Shutdown`
 
-**5.11 Dev wiring** (D5, D6). `scripts/build-daemon.mjs`, dev half only: run
-`cargo build -p veal-daemon` in `beforeDevCommand` before `pnpm dev`, in the
-matching profile. Document in it that step 7 adds the `externalBin` copy.
+   `id` is on requests that get a reply (D1).
+5. `DaemonMsg`:
+   - `Reply { id, result: Result<ReplyBody, String> }`, where `ReplyBody` is
+     `Hello { protocol, build, sessions }`, `List(Vec<SessionInfo>)`,
+     `Opened { session, exited, code, agent }` or `Ok`.
+   - Events: `Exit { key, code }`, `Agent { key, agent }`,
+     `SessionAdded { key }`, `SessionRemoved { key }`.
+6. Move `SessionInfo` from `pty.rs` into a type both sides use; `pty.rs`
+   re-exports it so the app's import keeps compiling.
 
-**5.12 Live checks** on `cargo build --release --workspace`, with both exes in
-`target\release`, over CDP as in step 4:
-- **Step 4's table again:** every row.
-- **Acceptance 3 (F5), 4 (end `veal.exe` mid-run, relaunch restores), 5 (end the
-  daemon), 7, 10 (plan-15 floods across one pipe), 11 (`PATH`), 13 (proxy),
-  15 (idle cost), 16 (sleep).** These are the parts of acceptance that need only a
-  daemon.
-- **Known unknowns:** whether a console window flashes when a GUI-started daemon
-  spawns ConPTY, whether breakaway is refused when launched from Windows Terminal
-  and from an IDE terminal, and the `veal` launchers that `pty.rs:228` mentions.
-- Write the results at the top of this file, like steps 2–4.
+Tests:
+- Every message round-trips.
+- Feeding a frame one byte at a time gives `None` until the frame is complete,
+  then the frame.
+- Two frames in one buffer come out in order.
+- A length of `MAX_FRAME + 1` is an error, and so are a length of 0, an unknown
+  kind, a binary frame shorter than 4 bytes, and invalid JSON.
+- A fuzz-style loop over random bytes never panics.
+
+Done when: the module compiles with no I/O imports, and the tests pass.
+
+### 5.3 Spawn environment (`core/src/pty.rs`, new `core/src/userenv.rs`)
+
+1. `userenv::fresh() -> Option<Vec<(OsString, OsString)>>`:
+   - Call `OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE)`,
+     then `CreateEnvironmentBlock(&mut block, token, FALSE)`.
+   - Walk the block, which is UTF-16 entries ending in `\0` with a final `\0\0`.
+     Split each entry on the first `=` after position 0, so the `=C:` style
+     entries survive.
+   - Call `DestroyEnvironmentBlock` and close the token.
+   - Return `None` on any failure. It is `cfg(windows)`; other platforms return
+     `None`.
+2. In `start`, before `TERM`: if `fresh()` is `Some(vars)`, call
+   `cmd.env_clear()` and set each var. If it is `None`, log it and keep inheriting.
+3. `SpawnOptions` gains `env_overlay: Option<Vec<(String, String)>>`, applied after
+   the fresh block and before `TERM`, `VEAL_PANE` and the proxy, so those always
+   win. The app fills it in debug builds with `std::env::vars()`, and with `None`
+   in release builds. This happens now, in `pty_open`, so dev panes do not lose
+   the dev shell's variables before the switch.
+4. `windows-sys` features for core: `Win32_System_Environment`,
+   `Win32_System_Threading`, `Win32_Security`.
+
+Tests, ignored off Windows:
+- `fresh()` contains `PATH` and `USERPROFILE`, and not a variable the test set with
+  `std::env::set_var` just before.
+- A spawn with no overlay prints `%VEAL_TEST_X%` literally, so the variable is
+  unset. With an overlay setting it, the value is printed.
+- The existing proxy spawn test still sees its variables.
+
+Done when: the tests pass, and in a dev run a pane still sees a variable exported
+in the terminal that ran `pnpm tauri dev`.
+
+### 5.4 Pipe name and security (`core/src/pipe.rs`)
+
+1. `user_sid() -> io::Result<String>`: `OpenProcessToken`, then
+   `GetTokenInformation(TokenUser)` called twice (once for the size), then
+   `ConvertSidToStringSidW`, then `LocalFree`.
+2. `pipe_name() -> String`: `VEAL_PIPE` if it is set, otherwise
+   `\\.\pipe\veal-<sid>`, or `veal-dev-<sid>` under `cfg(debug_assertions)`.
+3. `server(name, first: bool) -> io::Result<NamedPipeServer>`:
+   - Build the security descriptor from SDDL `D:P(A;;GA;;;<sid>)` with
+     `ConvertStringSecurityDescriptorToSecurityDescriptorW`, and wrap it in a
+     `SECURITY_ATTRIBUTES`.
+   - Pass it to `ServerOptions::new().first_pipe_instance(first).reject_remote_clients(true)
+     .create_with_security_attributes_raw(name, &mut sa)`, then free the
+     descriptor.
+   - The "first" error that matters is `ERROR_ACCESS_DENIED`, which is what a
+     second daemon gets. Map it to `io::ErrorKind::AddrInUse`.
+4. `check_server_owner(handle) -> io::Result<()>`:
+   - `GetNamedPipeServerProcessId`, then
+     `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`, then `OpenProcessToken`,
+     then `TokenUser`.
+   - `EqualSid` against our own SID. Anything else is a `PermissionDenied`
+     error, sent before the client has written anything.
+5. Features: `Win32_Security_Authorization`, `Win32_System_Pipes`,
+   `Win32_Foundation`. tokio in core with `net`, `io-util`, `rt`, `sync`, `time`
+   and `macros`. It is already in the lock file at 1.53.1, so check that
+   `Cargo.lock` gains features, not versions.
+
+Tests, on a unique `VEAL_PIPE`:
+- `user_sid()` starts with `S-1-5-21-`.
+- `pipe_name()` uses the override.
+- A second `server(name, true)` while the first is open fails with
+  `AddrInUse`.
+- `check_server_owner` passes on our own server.
+
+Done when: the tests pass. The other-user check waits for acceptance 14.
+
+### 5.5 The daemon crate (`src-tauri/daemon`)
+
+First, core changes, kept in a commit of their own:
+- `attach_key(key, cols, rows, responder, controller, notify)`. Only a controller
+  resizes. The app's current call passes `true, true`.
+- `PtyRegistry::open` takes the same two flags.
+- `Session::resync(client)` sets the existing `resync` flag. `Taken` gains
+  `snapshot: bool`, and `take_from` returns `Taken` instead of `Vec<u8>`.
+- `key_of(id)` lets the agent sink map ids to keys.
+- `set_theme_all(fg, bg)` stores the theme and applies it to every session and
+  to each new one in `start`.
+- `write` takes its writer from a per-session input thread (D9). `start`
+  creates a `mpsc::Sender<Vec<u8>>` and a `pty-{id}-input` thread that does the
+  `write_all` and `flush`, and `write` only sends to the channel. This also
+  helps the in-process app, and the existing write tests cover it.
+
+Then the crate:
+1. `daemon/Cargo.toml`: a bin named `veal-daemon`, with `veal-core`, tokio
+   (`rt-multi-thread`) and `serde_json`. Add `"daemon"` to the workspace members.
+   `#![windows_subsystem = "windows"]` in `main.rs`.
+2. `main.rs`:
+   - Call `log::init("daemon")` and install a panic hook that logs.
+   - Parse `--build <id>` (5.7). Build a `State`, holding the
+     `Arc<PtyRegistry>`, the connections
+     (`Mutex<HashMap<ConnId, mpsc::UnboundedSender<Out>>>`), the last theme and
+     the build id.
+   - Start `agents::start(registry, sink)`. The sink maps the id to a key and
+     broadcasts `Agent`.
+   - Create the first server with `first = true`. On `AddrInUse`, log and exit 0.
+   - Accept loop: `server.connect().await`, then create the next instance
+     *before* spawning the connection task, so a client never finds no instance.
+   - An idle task runs every 1 s. If there are no connections and no live
+     sessions for `VEAL_IDLE_MS` (default 30 000), exit.
+3. `conn.rs`, one task per connection:
+   - **Reader:** read into a buffer and `decode` frames. The first frame must be
+     `Hello` with our `PROTOCOL`. Otherwise reply with an error and close.
+   - **Writer:** a task owning the write half, fed by `Out`. `Out` is either
+     `Frame(Vec<u8>)` or `Ready { id, client }`. On `Ready`, call
+     `registry.take_from(id, client)` and send it as `snapshot` or `output`.
+     `Ready` comes from the session's `Notify`, which sets a flag only once per
+     drain, so there is never more than one pending.
+   - **Per-connection map** `key -> (id, client)`, for `detach`, `resize` and
+     `resync`.
+   - **Dispatch:**
+     - `Spawn` runs on `spawn_blocking`: resolve the proxy, using
+       `resolve_proxy`, which moves from `lib.rs` into `core::proxy`. Then
+       `registry.open(...)` with the `notify` above, and an `on_exit` that
+       captured the key and broadcasts `Exit`. Broadcast `SessionAdded` if it
+       spawned.
+     - `Attach` is the same without spawning.
+     - `Detach`, `Resize`, `Kill` (then `SessionRemoved`), `Forget`, `Resync`
+       and `List` run inline.
+     - `Theme` calls `set_theme_all` and stores the theme.
+     - `Shutdown`: reply `Ok`, `kill_all`, wait up to 2 s for `pids()` to empty,
+       then `process::exit(0)`.
+     - `input` frames go to `registry.write(id, bytes)`. An error is logged, not
+       replied to.
+   - **Drop:** when the reader ends or a frame is bad, detach every client in the
+     map (`registry.detach`, which also sends owed answers), remove the
+     connection from `State`, and end the writer.
+   - **Panics:** `catch_unwind` around dispatch, or run the connection task and
+     check for a `JoinError` panic. Either way, log it and close that connection
+     only.
+
+Tests in the crate (`conn.rs`, with an in-memory duplex stream in place of the
+pipe; tokio's `io::duplex`):
+- `Hello` with the wrong protocol is refused.
+- `Spawn` twice with one key gives one session.
+- A fifth spawn is an error.
+- A dropped connection detaches its clients and leaves the shell running.
+- `Resync` gives a `snapshot` frame next.
+
+Done when: the crate builds, its tests pass, and `veal-daemon.exe` started by hand
+stays running with no window, then exits after 30 s idle.
+
+### 5.6 Client (`core/src/client.rs`)
+
+1. `Client::connect(name, sink: Arc<dyn Sink>) -> io::Result<Client>`:
+   - `ClientOptions::new().open(name)`, then `check_server_owner`, then send
+     `Hello`.
+   - Await the reply, and return `Mismatch { daemon, build, sessions }` if the
+     protocol differs.
+   - `ERROR_PIPE_BUSY` means retrying after 20 ms, up to 1 s. `NotFound` is
+     returned as is, for 5.7.
+2. `Sink`:
+   - `output(session, bytes)` and `snapshot(session, bytes)`
+   - `event(DaemonMsg)`
+   - `disconnected()`
+3. Inside the client:
+   - A writer task fed by an unbounded channel.
+   - A reader task that decodes frames. A `Reply` goes to the oneshot in
+     `pending: Mutex<HashMap<u64, oneshot::Sender<…>>>`, binary frames go to the
+     sink, and events go to `sink.event`.
+   - When the pipe closes, drain `pending` with a `Disconnected` error, then call
+     `sink.disconnected()` once.
+4. API:
+   - `async request(msg) -> Result<ReplyBody, ClientError>`
+   - `send(msg)` for `Detach`, `Resize` and `Resync`
+   - `input(session, bytes)`
+   - `async shutdown(timeout)`, which sends `Shutdown` and then waits for the
+     pipe to close.
+5. The sink is called on the reader task, and must not block. That is the
+   bridge's job (5.9).
+
+Tests: covered by 5.8. Add one unit test against a fake server on a duplex
+stream: replies arriving out of order reach the right callers.
+
+### 5.7 Starting the daemon (`core/src/client.rs`, `connect_or_launch`)
+
+1. `connect_or_launch(exe: &Path, build: &str, sink) -> Result<Client, StartError>`:
+   - Try `connect`. On `NotFound`, `launch(exe, build)` and then retry `connect`
+     every 50 ms for 2 s.
+   - On `Mismatch`, or a debug build whose `build` differs while the daemon has
+     no sessions: `shutdown`, wait for the pipe to go, launch, connect.
+   - A release mismatch is returned as `StartError::Mismatch { sessions }`.
+2. `launch`:
+   - `Command::new(exe).arg("--build").arg(build)`, with every stdio set to
+     `Stdio::null()`.
+   - `creation_flags(CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW | DETACHED_PROCESS)`.
+     If that fails with raw OS error 5, log it and retry without
+     `CREATE_BREAKAWAY_FROM_JOB`.
+   - Do not keep the `Child`.
+3. Finding the exe (the app's half, in `lib.rs`):
+   - Release builds use `current_exe().with_file_name("veal-daemon.exe")`.
+   - Debug builds (D6): the source is `target\debug\veal-daemon.exe`, next to the
+     dev `veal.exe`. `build` = its file size and modified time as hex. Copy it
+     to `veal-daemon-<build>.exe`, overwriting and ignoring an in-use error if
+     that copy is already running, and launch the copy.
+   - The daemon reports `build` in `Hello`.
+   - Old copies with no running process are deleted best-effort on each launch.
+4. If two apps race, both launch, one daemon exits on `AddrInUse`, and both
+   connect to the winner. 5.8 tests this.
+
+Done when: 5.8's start tests pass.
+
+### 5.8 Integration tests (`src-tauri/daemon/tests/daemon.rs`)
+
+Each test sets a unique `VEAL_PIPE` (from a UUID) and launches
+`env!("CARGO_BIN_EXE_veal-daemon")` through `connect_or_launch`. It uses a test
+`Sink` that collects bytes per session into a `Mutex<Vec<u8>>` and has a
+`wait_for(session, needle, timeout)`. The shell is `cmd.exe`, as in `pty.rs`'s
+tests.
+
+| Test | Steps | Pass |
+|---|---|---|
+| reattach | spawn, `echo marker`, drop the client, reconnect, attach | the snapshot contains `marker`, and the shell's pid is unchanged in `list` |
+| idempotent | spawn key A twice on two connections | one session in `list` |
+| cap | spawn 5 keys | the fifth is an error |
+| tombstone | spawn, write `ping -n 2 127.0.0.1 >nul & exit 3`, drop the client at once, wait 3 s, reconnect and attach | the reply says `exited`, code 3 |
+| resync | flood `for /L`, with the test sink not taking, then `Resync` | the next frame is `snapshot`, starting `ESC c` |
+| stalled | conn 1 attaches and never reads. Conn 2 attaches and runs a 50 000-line loop | conn 2 sees the end within 10 s, and conn 1's pipe never blocks the child |
+| bad frame | send a length of `u32::MAX` | that connection closes. A second connection still works |
+| shutdown | spawn 2, `shutdown` | both pids are gone and the pipe is gone within 3 s |
+| idle | `VEAL_IDLE_MS=500`, connect and disconnect with nothing spawned | the daemon has exited within 2 s |
+| race | two threads `connect_or_launch` at once | both work, and one daemon pid |
+| owner | (not portable) | `#[ignore]`, with a note pointing at acceptance 14 |
+
+Done when: all of these pass 10 times in a row (`cargo test -p veal-daemon --
+--test-threads=1` in a loop), because flaky pipe tests would hide real races.
+
+### 5.9 The bridge (`src-tauri/src/bridge.rs`, `lib.rs`)
+
+1. `Bridge`:
+   - `client: Mutex<Option<Arc<Client>>>`
+   - `panes: Mutex<Panes>`, where `Panes` is
+     `{ by_app: HashMap<u32, Pane>, by_wire: HashMap<u32, u32>, by_key: HashMap<String, u32> }`
+   - `next_id: AtomicU32`, which never resets (D10)
+   - `theme: Mutex<Option<(rgb, rgb)>>`
+   - the `AppHandle`
+2. `Pane { key, wire, outbox: Vec<u8>, notified: bool, resyncing: bool }`.
+3. `Sink` for the bridge:
+   - `output(wire, bytes)`: look up the pane. If it is `resyncing`, drop the
+     bytes. Otherwise append, and if the outbox would pass `OUTBOX_CAP`, clear
+     it, set `resyncing`, `client.send(Resync)` and push nothing.
+     If `notified` was false, set it and emit `pty-data { id }`. Only a lock and
+     a memcpy, so it never blocks.
+   - `snapshot(wire, bytes)`: clear `resyncing`, replace the outbox, notify.
+   - `event`: `Exit` is mapped by key to the app id and emits `pty-exit`.
+     `Agent` emits `pty-agent`. Added and removed are ignored in step 5.
+   - `disconnected`: clear the client and the panes, and emit `pty-daemon-lost`.
+4. `ensure_client()`: the existing client, or `connect_or_launch` (5.7). Then
+   send the stored theme. Called by every command, so after a daemon dies the next
+   `pty_open` (Restart) brings one back.
+5. Commands, with the same names and arguments so the payload test holds:
+   - `pty_open`: `ensure_client`, then `request(Spawn{...})` with the debug
+     overlay (5.3). Make a `Pane` with a new app id, and return
+     `OpenedPane { id, client: 0, exited, code, agent }`. The client id now lives
+     in the daemon; JS still sends it back and the bridge ignores it.
+   - `pty_read(id, client)`: take the outbox, clear `notified`, and return it as
+     a `Response` as today.
+   - `pty_write`: `client.input(wire, bytes)`.
+   - `pty_resize`: send `Resize`.
+   - `pty_detach`: send `Detach` and remove the pane.
+   - `pty_kill` and `pty_forget`: requests.
+   - `pty_list`: a request.
+   - New `pty_theme(fg, bg)`: store it and send `Theme`.
+   - These become `async fn` and await the client. `pty_read` stays sync.
+6. `run()`:
+   - Remove `.manage(Arc<PtyRegistry>)` and `agents::start`, and manage
+     `Bridge`.
+   - `setup` calls `ensure_client` on a spawned task, so a slow start does not
+     block the window. Commands await the same connection.
+   - `on_page_load(Started)` calls `bridge.detach_all()`, which sends `Detach`
+     for every pane and clears them. It happens before any command from the new
+     page, and over the same pipe, so it is ordered before the new attaches.
+   - `Destroyed` runs `block_on(client.shutdown(2 s))` (D4).
+7. Check that `pty.ts` needs no change apart from the theme call and
+   `pty-daemon-lost` (5.10). `pty.test.ts`'s payload test still parses `lib.rs`,
+   so keep the command functions in `lib.rs` as thin wrappers over `bridge`.
+
+Tests (Rust, in `bridge.rs`, with a fake client trait so no pipe is needed):
+- An overflow sends one `Resync`, then drops `output` until a `snapshot`.
+- `pty_read` clears `notified`.
+- After `disconnected`, a stale wire id from the old daemon is ignored.
+- Exit mapped by key reaches the right app id.
+
+Done when: `pnpm tauri dev` opens panes through the daemon. Check that the
+process tree shows `pwsh` under `veal-daemon-*.exe`, not under `veal.exe`, and
+step 4's F5 checks still pass by hand.
+
+### 5.10 UI (`src/pty.ts`, `src/components/TerminalPane.tsx`, `src/App.tsx`)
+
+1. `pty.ts`:
+   - `onDaemonLost(cb)`, with one app-wide listener for `pty-daemon-lost`. It
+     also clears `exitHandlers`, `earlyExits`, `agentHandlers`, `latestAgents`
+     and `dataHandlers`, since those ids are dead.
+   - `setTheme(fg, bg)` calls `invoke("pty_theme")`.
+2. `TerminalPane`:
+   - A `lost` state. When the daemon is lost, stop the drain (`detach` is
+     already a no-op on the Rust side) and show
+     `<div className="pane-footer error">background service stopped <button>Restart</button></div>`,
+     next to the existing footers at `TerminalPane.tsx:269`.
+   - Restart bumps a `generation` counter in the open effect's dependencies.
+     The effect then calls `openPty` with the same key and the saved cwd, which
+     spawns fresh because the new daemon does not know the key.
+3. Theme: an `App`-level effect on `useEffectiveMode()` calls
+   `setTheme(hexToRgb(terminalTheme().foreground), hexToRgb(...background))`.
+   Do it once, not per pane, since the daemon applies it to every session.
+
+Tests (vitest, in the `pty.test.ts` style):
+- `pty-daemon-lost` fires every `onDaemonLost` callback and empties the maps.
+- Restart calls `pty_open` with the same key.
+- `setTheme` sends the right arguments.
+- `hexToRgb` parses `#rrggbb` and `#rgb`.
+
+Done when: ending `veal-daemon-*.exe` in Task Manager shows the footer on every
+pane, and Restart gives a working shell in the same cwd.
+
+### 5.11 Dev wiring (`scripts/build-daemon.mjs`, `tauri.conf.json`)
+
+Land this before 5.9.
+
+1. `build-daemon.mjs`:
+   - Run `cargo build -p veal-daemon --manifest-path src-tauri/Cargo.toml`,
+     adding `--release` when it is passed `--release`.
+   - Stream the output, and exit with cargo's code.
+   - A header comment says step 7 adds the copy to
+     `binaries/veal-daemon-x86_64-pc-windows-msvc.exe` for `externalBin`.
+2. `tauri.conf.json`: set `beforeDevCommand` to
+   `node scripts/build-daemon.mjs && pnpm dev`. `beforeBuildCommand` is left
+   alone until step 7.
+3. Add a `pnpm` script, `daemon`, for building it alone.
+
+Done when: on a clean `target`, `pnpm tauri dev` builds the daemon and the app
+starts it. Editing a daemon file and restarting dev picks up the new daemon
+(D6's build check), as long as no panes are open.
+
+### 5.12 Live checks
+
+Build with `node scripts/build-daemon.mjs --release` and then
+`pnpm tauri build`, so both exes sit in `target\release`. Run `veal.exe` from
+there. Use step 4's CDP scripts (`Page.reload`) where a check is scripted.
+
+1. Step 4's live table, every row. The "close the app" row now means the daemon
+   exits too (D4).
+2. Acceptance 3 (F5 mid-agent, no junk in its input).
+3. Acceptance 4: end `veal.exe` in Task Manager mid-run. The agent keeps going,
+   and relaunching restores it. It is new in step 5, and it is the step's main
+   result.
+4. Acceptance 5: end the daemon. The footer and Restart work (5.10).
+5. Acceptance 7: `exit` and `exit 3` while attached and while detached. Use F5 for
+   "detached", since closing the window still sends `shutdown`.
+6. Acceptance 10: plan-15's flood list, A2, A3 and A6, with four panes on one
+   pipe. Pause the page in the debugger mid-flood: the child finishes, and the
+   screen is right on resume.
+7. Acceptance 11: `setx` a new `PATH` entry, open a new pane, and `where` finds
+   the tool with no daemon restart.
+8. Acceptance 13: plan-18's A1 and A10, and the Settings row matches a new pane's
+   `env`.
+9. Acceptance 15: four idle panes. Daemon CPU stays under 1% in Task Manager for 60
+   s. Report private bytes with 5000 lines each.
+10. Acceptance 16: sleep with an agent running, resume, type into it.
+11. Known unknowns:
+    - **Console flash.** Watch the screen during 10 spawns, and check that
+      `Get-Process conhost` gains no window (`MainWindowHandle` stays 0).
+    - **Breakaway.** Launch `veal.exe` from Windows Terminal, from VS Code's
+      terminal and from Explorer. Close the launching terminal: the daemon must
+      survive in all three. The log shows whether the fallback ran.
+    - **Launchers.** Find the `veal` launchers that `pty.rs:228` refers to.
+      Confirm they do not assume a shell dies with the window.
+12. Write the results at the top of this file, as for steps 2–4, with test
+    counts, the installer size (no daemon in it yet, D5) and anything found.
 
 ## Tests
 
@@ -805,3 +1136,6 @@ Run on the release build, with a real `claude` session unless stated.
   shell stuck on its opening query after a reload; sections 2 and 3 changed to match.
 - 2026-11-09: step 5 broken into tasks (section "Step 5 tasks"), with request ids,
   `resync`, close-sends-`shutdown` until step 6, and the dev daemon build pulled in.
+- 2026-11-09: each step 5 task given a how-to (files, steps, tests, done when), and
+  decisions D7–D10: `spawn` attaches, a snapshot frame kind, a writer thread per
+  session, and app-side ids.
