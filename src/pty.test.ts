@@ -17,7 +17,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 
-const { killSession, listSessions, onDaemonLost, openPty, parseColor, resolveProxy, setTheme } = await import("./pty");
+const { killSession, listSessions, onDaemonLost, openPty, parseColor, resolveProxy, setCloseMode, setTheme } = await import("./pty");
 
 const fire = (name: string, payload: unknown) => events.get(name)!({ payload });
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -342,6 +342,14 @@ describe("terminal colours for the daemon (plan-19 5.10)", () => {
     await setTheme([1, 2, 3], [4, 5, 6]);
     expect(invoke).toHaveBeenCalledWith("pty_theme", { fg: [1, 2, 3], bg: [4, 5, 6] });
     expect(libRs).toMatch(/fn pty_theme\([^)]*fg: \(u8, u8, u8\), bg: \(u8, u8, u8\)\)/);
+  });
+});
+
+describe("closing (plan-19 6.3)", () => {
+  it("sends pty_close_mode with the key Rust takes", async () => {
+    await setCloseMode(true);
+    expect(invoke).toHaveBeenCalledWith("pty_close_mode", { keep: true });
+    expect(libRs).toMatch(/fn pty_close_mode\([^)]*keep: bool\)/);
   });
 });
 

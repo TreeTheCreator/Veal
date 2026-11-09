@@ -11,7 +11,7 @@
 
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -271,6 +271,9 @@ pub struct Bridge {
     connecting: tauri::async_runtime::Mutex<()>,
     next_app: AtomicU32,
     theme: Mutex<Option<(Rgb, Rgb)>>,
+    /// The close guard chose Keep running: closing detaches, not `shutdown`
+    /// (plan-19 E3).
+    keep_on_close: AtomicBool,
 }
 
 impl Bridge {
@@ -285,6 +288,7 @@ impl Bridge {
             connecting: tauri::async_runtime::Mutex::new(()),
             next_app: AtomicU32::new(1),
             theme: Mutex::new(None),
+            keep_on_close: AtomicBool::new(false),
         }
     }
 
@@ -426,8 +430,24 @@ impl Bridge {
         }
     }
 
-    /// The window is closing for good. Until the tray exists (step 6), this
-    /// ends every shell, as closing always has (plan-19 D4).
+    /// Set by the close guard just before the window goes.
+    pub fn set_keep_on_close(&self, keep: bool) {
+        self.keep_on_close.store(keep, Ordering::SeqCst);
+    }
+
+    /// The window is going for good. Keep running leaves every shell to the
+    /// daemon and its tray; anything else ends them, so idle shells do not
+    /// pile up unseen (plan-19 section 8).
+    pub async fn close(&self) {
+        if self.keep_on_close.load(Ordering::SeqCst) {
+            vlog!("[bridge] closing; shells keep running");
+            self.detach_all();
+            return;
+        }
+        self.shutdown().await;
+    }
+
+    /// End every shell and the daemon.
     pub async fn shutdown(&self) {
         if let Some(c) = self.current() {
             c.shutdown(Duration::from_secs(2)).await;

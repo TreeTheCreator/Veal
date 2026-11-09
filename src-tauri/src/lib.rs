@@ -128,6 +128,13 @@ async fn pty_kill(bridge: State<'_, Arc<Bridge>>, key: String) -> Result<(), Str
     bridge.kill(key).await
 }
 
+/// The close guard's choice, just before the window goes: keep the shells
+/// running in the background, or end them (plan-19 E3).
+#[tauri::command(async)]
+fn pty_close_mode(bridge: State<'_, Arc<Bridge>>, keep: bool) {
+    bridge.set_keep_on_close(keep);
+}
+
 /// The terminal colours, for OSC 10/11 answers while no window is attached.
 #[tauri::command(async)]
 fn pty_theme(bridge: State<'_, Arc<Bridge>>, fg: (u8, u8, u8), bg: (u8, u8, u8)) {
@@ -386,6 +393,7 @@ pub fn run() {
             pty_resize,
             pty_kill,
             pty_theme,
+            pty_close_mode,
             proxy_resolve,
             projects_list,
             projects_add,
@@ -417,11 +425,10 @@ pub fn run() {
         .on_window_event(|window, event| {
             // The window is really going. Not on CloseRequested: the close guard
             // in JS (plan-06) can cancel that, and the panes must survive it.
-            // Until the tray exists (step 6), closing still ends every shell,
-            // now by asking the daemon to (plan-19 D4).
+            // The shells keep running only if the guard chose Keep running.
             if let WindowEvent::Destroyed = event {
                 let bridge = Arc::clone(&*window.state::<Arc<Bridge>>());
-                tauri::async_runtime::block_on(bridge.shutdown());
+                tauri::async_runtime::block_on(bridge.close());
             }
         })
         .run(tauri::generate_context!())
