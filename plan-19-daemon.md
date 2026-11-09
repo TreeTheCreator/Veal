@@ -2,8 +2,54 @@
 
 Status: build order 1 (the gate) RUN 2026-11-07: passed, with the conditions
 below. Step 2 BUILT and checked 2026-11-07. Step 3 BUILT 2026-11-08, with two
-plan-15 checks left for a person (below). Step 4 BUILT 2026-11-08. Steps 5–8 not
-started.
+plan-15 checks left for a person (below). Step 4 BUILT 2026-11-08. Step 5 BUILT
+2026-11-09, with three checks left for a person (below). Steps 6–8 not started.
+
+Results for 5: shells live in `veal-daemon.exe`, behind a user-only named pipe, and
+the app is a client of it (tasks 5.1–5.11, one commit each). `cargo test --workspace`
+167 (+3 ignored): 50 app, 97 core, 9 daemon, 11 daemon integration against a real
+daemon. `pnpm test` 234. Clippy has the same single warning. Installer 5.02 MB
+(no daemon in it yet, D5); `veal.exe` 15.3 MB, `veal-daemon.exe` 1.35 MB. The
+updater signature step fails here for want of the private key, as expected.
+
+Live, on the release build over CDP, typing through `Input.insertText` (a release
+build has no `__veal` hook) and checking files the shells wrote and screenshots:
+
+| Check | Result |
+|---|---|
+| Step 4's table: F5 twice with a child counting | Same shell PID, child never stopped (59→80→99), screen restored, Ctrl+C and typing work |
+| Close the app (D4) | Window close sends `shutdown`: app, daemon and every shell gone within 4 s |
+| A3: F5 twice with `claude` open | Input box empty, badge and sidebar dot right at once; a key and a double Ctrl+C reach it after; badge clears on exit |
+| A4: end `veal.exe` mid-run | Child kept writing (44→116 while gone); relaunch attached to the same daemon and showed the ticks it missed |
+| A5: end the daemon | All four panes show "background service stopped"; Restart gives four new shells in `~\veal` on a new daemon |
+| A7 | `exit` attached closes the pane; `exit` while the app was ended: dropped on relaunch; `exit 3` while ended: `process exited (code 3)` on relaunch and on every reload |
+| A10: four panes flooding 60 s | None stopped; UI timer lag p50 0.8 ms, p99 6.2 ms, max 36 ms; all four answered after Ctrl+C. `veal.exe` 8.2→9.5 MB private, daemon 13.5→46 MB |
+| A10: page frozen in the debugger | A 60 000-line flood took 29 s rendered and 15 s with the page paused; screen right on resume (last line, END-MARK, prompt) |
+| A10: closing a flooding pane / `exit` after Ctrl+C mid-flood | Shell gone within 2.5 s / pane closes |
+| A11 | `setx` of a test variable (then deleted): a new pane sees it, old panes do not, same daemon PID |
+| A13 | New pane's `http_proxy`, `https_proxy`, `no_proxy`, `NODE_USE_ENV_PROXY` equal to `proxy_resolve`'s row; `curl` through it reaches the API |
+| A15: four idle panes, 5000 lines each | Daemon 0.91% of a core over 60 s, 47 MB private; app 0.31%, 9.9 MB |
+| Console flash | Ten spawns: every conhost under the daemon has `MainWindowHandle` 0 |
+| Breakaway | Launched from Explorer and from Windows Terminal: no fallback in the log. Closing the WT window left app and daemon running |
+| Launchers | `veal.cmd` only `start`s the exe and exits its cmd unless `VEAL_PANE` is set: nothing assumes a shell dies with the window |
+
+Left for a person: A16 (sleep and resume with an agent running), launching from VS
+Code's terminal (not installed here), and watching the screen itself for a console
+flash (only `MainWindowHandle` was checked). Launched from the sandboxed shell used
+for these runs, the log shows "job forbids breakaway; daemon starts inside it", so the
+fallback works too.
+
+Found while building, all fixed with tests: the daemon inherited the test harness's
+stdout (launch now uses `CreateProcessW` with no inherited handles); React's double
+effect plus a detach of the newer attach left no current client (the newest remaining
+attach is promoted, on both sides of the pipe); the first key typed after a reload was
+swallowed by a second cursor report (the responder role goes back to the newest client
+that asked for it); Ctrl+C did nothing in panes, because "ignore Ctrl+C" was inherited
+down the launch chain (the daemon resets it at start, and `CREATE_NEW_PROCESS_GROUP`
+is gone). Notes: the idle daemon's 0.91% is close to the 1% bar and is mostly the
+agent scan every 3 s, which `veal.exe` ran before; `curl` with revocation checks fails
+through the Veee proxy with or without Veal (`CRYPT_E_REVOCATION_OFFLINE`), so A13's
+curl used `--ssl-no-revoke`.
 
 Results for 4: panes carry a UUID `session` key and `pty_open` attaches to it or
 spawns it, so F5 keeps every shell. `pty_spawn` and `pty_reset` are gone. Rust's
@@ -1139,3 +1185,5 @@ Run on the release build, with a real `claude` session unless stated.
 - 2026-11-09: each step 5 task given a how-to (files, steps, tests, done when), and
   decisions D7–D10: `spawn` attaches, a snapshot frame kind, a writer thread per
   session, and app-side ids.
+- 2026-11-09: step 5 built and checked live on the release build. Results at the
+  top; three checks left for a person.
