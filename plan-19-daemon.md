@@ -3,7 +3,8 @@
 Status: build order 1 (the gate) RUN 2026-11-07: passed, with the conditions
 below. Step 2 BUILT and checked 2026-11-07. Step 3 BUILT 2026-11-08, with two
 plan-15 checks left for a person (below). Step 4 BUILT 2026-11-08. Step 5 BUILT
-2026-11-09, with three checks left for a person (below). Steps 6–8 not started.
+2026-11-09, with three checks left for a person (below). Step 6 broken into
+tasks 2026-11-09 (section "Step 6 tasks"). Steps 6–8 not started.
 
 Results for 5: shells live in `veal-daemon.exe`, behind a user-only named pipe, and
 the app is a client of it (tasks 5.1–5.11, one commit each). `cargo test --workspace`
@@ -1069,6 +1070,137 @@ there. Use step 4's CDP scripts (`Page.reload`) where a check is scripted.
 12. Write the results at the top of this file, as for steps 2–4, with test
     counts, the installer size (no daemon in it yet, D5) and anything found.
 
+## Step 6 tasks
+
+Section 8's close guard, tray and setting. Updates, `externalBin` and the
+installer hooks stay in step 7. So does the version-mismatch prompt, which only
+an update can cause.
+
+**Decisions this breakdown makes against section 8** (change them here if wrong):
+
+- **E1. A window is "attached" when a `desktop` connection is open.** `hello`
+  already carries `role`; the daemon counts connections whose role is
+  `desktop`. A pane being attached is not needed: a window with no panes still
+  owns the sessions and shows them.
+- **E2. The tray polls.** Its thread runs a Win32 message loop with a 1 s
+  `SetTimer`, and each tick reads `State::tray_view()`. Shells exiting, agents
+  changing and connections opening all change it, from three different threads;
+  a 1 s poll of two mutexes is cheaper than wiring three notifiers, and well
+  under A15's budget.
+- **E3. Keep running is a flag on the bridge.** JS calls
+  `pty_close_mode { keep }` just before `destroy()`. `Destroyed` sends `shutdown`
+  unless the flag is set, so every other way the window goes (a crash, Alt+F4
+  racing the guard) still ends idle shells, as today.
+- **E4. The tray launches `veal.exe` from next to the daemon's own exe.** In
+  dev, the daemon copy (D6) sits in `target\debug` beside `veal.exe`, so the same
+  rule holds. The single-instance plugin covers a click while the app starts.
+- **E5. The setting only covers agents.** Unsaved files still always ask. With
+  `keep` or `stop` saved and no unsaved files, closing does not show the dialog.
+  The dialog's "Remember" checkbox and the Settings row write the same key.
+- **E6. Stop from the tray asks with a `MessageBoxW`** (Yes/No, default No)
+  when agents are running, and not otherwise. It then runs `State::shutdown()`.
+
+Order: 6.1, then 6.2. 6.3–6.5 do not depend on 6.1–6.2 or on each other, except
+that 6.5 needs 6.3 and 6.4. Each task is one commit, and `cargo test --workspace`,
+`pnpm test` and clippy pass after each.
+
+### 6.1 What the tray shows (`daemon/src/lib.rs`, `core/src/pty.rs`)
+
+1. `PtyRegistry::agents() -> Vec<String>`: the detected agent of every live
+   session.
+2. `State` records each connection's role with its sender, so
+   `State::desktops()` counts `desktop` connections (E1).
+3. `pub struct TrayView { tooltip: String, agents: usize }` and
+   `State::tray_view() -> Option<TrayView>`: `None` while a desktop is attached
+   or no session is live. Tooltip `Veal: 2 agents running`, `Veal: 1 agent
+   running`, or `Veal: 3 shells running` when no agent is.
+4. Tests: no view with a desktop attached; a view once it detaches with a shell
+   still live; none with nothing live; the tooltip wording for 0, 1 and 2 agents
+   (a pure `tooltip(sessions, agents)`).
+
+Done when: the tests pass.
+
+### 6.2 The tray (`daemon/src/tray.rs`, `daemon/Cargo.toml`)
+
+1. Dependencies: `tray-icon` 0.24 (in the lock already), `png` 0.17 to decode
+   the icon, and `windows-sys` with `Win32_UI_WindowsAndMessaging`.
+2. `tray::start(state)`: a thread named `tray` running a message loop. A
+   `SetTimer` of 1 s; each tick reads `tray_view()` (E2):
+   - `Some` and no icon: build it from `icons/32x32.png` (`include_bytes!`),
+     with the menu below. A failure is logged once and retried on the next
+     tick, never fatal.
+   - `Some` and an icon: update the tooltip if it changed.
+   - `None`: drop the icon, which removes it.
+3. Menu: **Open Veal**, **Stop everything and quit**. A left click on the
+   icon is Open Veal.
+   - Open: `Command::new(current_exe().with_file_name("veal.exe"))` (E4),
+     detached, cwd the user's profile. Logged on failure.
+   - Stop: if `agents > 0`, `MessageBoxW` "N agents are running. Stop them and
+     quit?" Yes/No, default No (E6). Then `State::shutdown()` off the tray
+     thread.
+4. `main.rs` starts it after `run` has the pipe, so a second daemon that
+   loses `first_pipe_instance` never shows an icon. `run` gains an
+   `on_listening` callback for that.
+
+Done when: it builds, clippy is clean, and the live check in 6.6 shows it.
+
+### 6.3 Keep running on close (`src-tauri/src/lib.rs`, `bridge.rs`, `src/pty.ts`)
+
+1. `Bridge::keep_on_close: AtomicBool`, and a command
+   `pty_close_mode { keep: bool }` that sets it (E3).
+2. `Destroyed`: if set, `detach_all()` and nothing else; the pipe closes with
+   the process and the daemon detaches what is left. Otherwise `shutdown()` as
+   today.
+3. `pty.ts`: `setCloseMode(keep)`.
+4. The payload test picks up the new command name.
+
+Done when: tests pass.
+
+### 6.4 The setting (`src/settings/store.ts`, `SettingsView.tsx`)
+
+1. `closeWithAgents: "ask" | "keep" | "stop"`, key `close_with_agents`,
+   default `ask`, anything else loads as `ask`.
+2. A Settings row, "When closing with agents running", a segmented control:
+   Ask, Keep running, Stop them.
+3. Tests in `store.test.ts`: default, parse, write-through.
+
+Done when: tests pass.
+
+### 6.5 The close guard (`src/close.ts`, `CloseGuard.tsx`)
+
+1. `src/close.ts`, pure:
+   `closeDecision({ dirty, agents, setting }) -> "stop" | "keep" | "ask"`.
+   Unsaved files ask. No agents: `stop`. Otherwise the setting, with `ask`
+   asking (E5).
+2. `CloseGuard`: `stop` and `keep` call `setCloseMode`, `flushAll`, `destroy`.
+   The dialog, when agents are running, reads "These keep running in the
+   background, and Veal stays in the tray:" with three buttons: Cancel,
+   **Stop and quit**, **Keep running** (focused, primary). With unsaved files the
+   two quits are "Discard and stop", "Discard and keep running". With unsaved
+   files and no agents it is as today. A "Don't ask again" checkbox saves the
+   chosen one into `closeWithAgents`.
+3. Tests in `close.test.ts`: one per row of the decision.
+
+Done when: tests pass.
+
+### 6.6 Live checks
+
+On the release build, as for 5.12:
+
+1. Acceptance 1, with a `claude` session doing a long task: close, Keep
+   running. The tray shows it with the right tooltip. Reopen from the tray
+   after 5 minutes: same pane and screen, badge and dot right at once, work
+   finished.
+2. Acceptance 2: prompt, Shift+Enter, paste text, paste an image, Ctrl+C in the
+   reattached agent.
+3. Acceptance 6: close with idle shells only. No dialog, no tray, daemon gone.
+4. Acceptance 8: spawn a pane and close within a second, Keep running: the
+   shell starts and is usable on reopen.
+5. Acceptance 9: close mid-spawn 20 times, no session hangs.
+6. Tray: Stop asks with an agent running and not without; the icon goes when
+   a window attaches; the setting's `keep` and `stop` skip the dialog.
+7. Write the results at the top of this file.
+
 ## Tests
 
 Rust:
@@ -1187,3 +1319,6 @@ Run on the release build, with a real `claude` session unless stated.
   session, and app-side ids.
 - 2026-11-09: step 5 built and checked live on the release build. Results at the
   top; three checks left for a person.
+- 2026-11-09: step 6 broken into tasks (section "Step 6 tasks"), with decisions
+  E1–E6: a desktop connection means attached, the tray polls, Keep running is a
+  flag on the bridge, and the setting only covers agents.
