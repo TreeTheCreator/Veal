@@ -507,6 +507,8 @@ pub struct Attached {
 
 pub struct Taken {
     pub bytes: Vec<u8>,
+    /// `bytes` is a whole screen starting with a reset, not a continuation.
+    pub snapshot: bool,
     /// This client is finished, and no client is left. The session can go.
     pub finished: bool,
 }
@@ -675,7 +677,7 @@ impl Session {
     pub fn take(&self, client: ClientId) -> Taken {
         let mut inner = self.lock();
         let Some(resync) = inner.clients.all.get(&client).map(|c| c.resync) else {
-            return Taken { bytes: Vec::new(), finished: false };
+            return Taken { bytes: Vec::new(), snapshot: false, finished: false };
         };
         let snapshot = if resync {
             Some(guarded(&mut inner.screen, |s| s.snapshot()).unwrap_or_else(|| RESET_ONLY.to_vec()))
@@ -692,12 +694,30 @@ impl Session {
             }
             None => std::mem::take(&mut c.queue),
         };
+        let snapshot = resync;
         let mut finished = false;
         if inner.eof && bytes.is_empty() {
             inner.clients.all.remove(&client);
             finished = inner.clients.all.is_empty();
         }
-        Taken { bytes, finished }
+        Taken { bytes, snapshot, finished }
+    }
+
+    /// The client lost bytes on its side: drop its queue, and make its next
+    /// take a snapshot (plan-19 D2).
+    pub fn resync(&self, client: ClientId) {
+        let mut inner = self.lock();
+        let Some(c) = inner.clients.all.get_mut(&client) else { return };
+        c.queue = Vec::new();
+        c.resync = true;
+        let wake = (!c.notified).then(|| {
+            c.notified = true;
+            Arc::clone(&c.notify)
+        });
+        drop(inner);
+        if let Some(notify) = wake {
+            notify();
+        }
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {
@@ -917,6 +937,33 @@ mod tests {
         assert_eq!(signals.load(Ordering::Relaxed), 2, "the take cleared it");
         assert_eq!(s.take(c).bytes, b"c");
         assert!(s.take(c).bytes.is_empty());
+    }
+
+    /// `resync` drops the queue, signals once, and the next take is a flagged
+    /// snapshot; the take after that is the stream again (plan-19 D2, D8).
+    #[test]
+    fn resync_turns_the_next_take_into_a_snapshot() {
+        let s = Session::new(40, 8);
+        let signals = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&signals);
+        let c = s.first_client(Arc::new(move || {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }));
+        s.feed(b"hello");
+        let first = s.take(c);
+        assert!(!first.snapshot);
+        s.feed(b" world");
+        s.resync(c);
+        assert_eq!(signals.load(Ordering::Relaxed), 2, "feed signalled; resync did not need to");
+        let snap = s.take(c);
+        assert!(snap.snapshot);
+        assert!(snap.bytes.starts_with(b"\x1bc"));
+        s.resync(c);
+        assert_eq!(signals.load(Ordering::Relaxed), 3, "nothing outstanding, so resync signals");
+        assert!(s.take(c).snapshot);
+        s.feed(b"!");
+        let after = s.take(c);
+        assert_eq!((after.bytes.as_slice(), after.snapshot), (&b"!"[..], false));
     }
 
     /// A reader feeds while a client attaches mid-stream: snapshot plus the

@@ -15,7 +15,7 @@
 //! The registry is Tauri-agnostic (callbacks instead of channels/events) so it
 //! can be exercised from `cargo test` without a webview.
 
-use crate::session::{Attached, ClientId, Notify, Session};
+use crate::session::{Attached, ClientId, Notify, Session, Taken};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -59,6 +59,9 @@ struct PtyHandle {
     /// Its own lock (plan-12): a write blocks when the child stops reading
     /// its pipe, and that must not hold `panes` against every other pane.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Input and query answers, in order, for the pane's writer thread. A
+    /// caller never waits on a child that has stopped reading (plan-19 D9).
+    input: mpsc::Sender<Vec<u8>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// The shell's pid; agent detection walks its descendants.
     pid: Option<u32>,
@@ -100,7 +103,11 @@ pub struct PtyRegistry {
     /// output nobody has fetched. An entry leaves when its last client has
     /// taken everything after EOF, or when it is killed or forgotten.
     sessions: Mutex<HashMap<u32, Entry>>,
+    /// The last theme a client reported, for sessions started after it.
+    theme: Mutex<Option<Theme>>,
 }
+
+type Theme = ((u8, u8, u8), (u8, u8, u8));
 
 fn no_pty(id: u32) -> String {
     format!("no pty {id}")
@@ -195,19 +202,33 @@ impl PtyRegistry {
     /// is. Its first take is a snapshot. This is the cheap half of `open`: it
     /// lets a caller skip work that only a spawn needs.
     pub fn attach_key(&self, key: &str, cols: u16, rows: u16, on_data_ready: DataReady) -> Option<Opened> {
+        self.attach_key_as(key, cols, rows, true, true, on_data_ready)
+    }
+
+    /// `attach_key` for any client: only a controller sets the size, and only a
+    /// responder answers queries (plan-19 section 3).
+    pub fn attach_key_as(
+        &self,
+        key: &str,
+        cols: u16,
+        rows: u16,
+        responder: bool,
+        controller: bool,
+        on_data_ready: DataReady,
+    ) -> Option<Opened> {
         let (id, session, agent) = {
             let sessions = self.sessions.lock().unwrap();
             let (id, e) = sessions.iter().find(|(_, e)| e.key == key)?;
             (*id, Arc::clone(&e.session), e.agent.clone())
         };
-        if let Some(h) = self.panes.lock().unwrap().get(&id) {
+        if let Some(h) = self.panes.lock().unwrap().get(&id).filter(|_| controller) {
             // A repaint is not free, and the same size would not need one.
             if h.master.get_size().map_or(true, |s| s.cols != cols || s.rows != rows) {
                 session.resize(cols, rows);
                 let _ = h.master.resize(size(cols, rows));
             }
         }
-        let attached = session.attach(true, Arc::new(move || on_data_ready(id)));
+        let attached = session.attach(responder, Arc::new(move || on_data_ready(id)));
         self.send_owed(id, &session);
         Some(Opened { id, client: attached.client, exit: attached.exit, agent })
     }
@@ -375,21 +396,26 @@ impl PtyRegistry {
         );
         // Holds the writer only weakly, so the handle still decides when it closes.
         let reply_writer = Arc::downgrade(&writer);
+        // Query answers and input leave the caller's thread: a child that has
+        // stopped reading would block the write, and neither the reader nor a
+        // client connection may stop. Ends when the handle and the reader have
+        // both dropped their senders, or the writer is gone.
+        let (replies, reply_queue) = mpsc::channel::<Vec<u8>>();
         self.panes.lock().unwrap().insert(
             id,
             PtyHandle {
                 master: pair.master,
                 writer,
+                input: replies.clone(),
                 killer,
                 pid,
                 session: Arc::clone(&session),
             },
         );
+        if let Some(theme) = *self.theme.lock().unwrap() {
+            session.set_theme(theme.0, theme.1);
+        }
 
-        // Query answers leave the reader's thread: a child that has stopped
-        // reading would block the write, and the reader must never stop. Ends
-        // when the reader drops the sender.
-        let (replies, reply_queue) = mpsc::channel::<Vec<u8>>();
         // Any thread failing to start (plan-16) must not leave a pane
         // registered with a live child and nobody to reap it.
         thread::Builder::new()
@@ -488,7 +514,14 @@ impl PtyRegistry {
     /// is not an error for a drain loop. A session with no key goes once EOF has
     /// been reached and its last client has taken it all.
     pub fn take_from(&self, id: u32, client: ClientId) -> Vec<u8> {
-        let Some(session) = self.session(id) else { return Vec::new() };
+        self.take_taken(id, client).bytes
+    }
+
+    /// `take_from`, saying whether the bytes are a snapshot (plan-19 D8).
+    pub fn take_taken(&self, id: u32, client: ClientId) -> Taken {
+        let Some(session) = self.session(id) else {
+            return Taken { bytes: Vec::new(), snapshot: false, finished: false };
+        };
         let taken = session.take(client);
         if taken.finished {
             let mut sessions = self.sessions.lock().unwrap();
@@ -496,7 +529,38 @@ impl PtyRegistry {
                 sessions.remove(&id);
             }
         }
-        taken.bytes
+        taken
+    }
+
+    /// This client's next take is a snapshot.
+    pub fn resync(&self, id: u32, client: ClientId) {
+        if let Some(session) = self.session(id) {
+            session.resync(client);
+        }
+    }
+
+    /// The key a session is known by.
+    pub fn key_of(&self, id: u32) -> Option<String> {
+        self.sessions.lock().unwrap().get(&id).map(|e| e.key.clone())
+    }
+
+    /// The id a key's session has now.
+    pub fn id_for(&self, key: &str) -> Option<u32> {
+        self.id_of(key)
+    }
+
+    /// Sessions whose child is still running.
+    pub fn live_count(&self) -> usize {
+        self.sessions.lock().unwrap().values().filter(|e| e.session.exit().is_none()).count()
+    }
+
+    /// The colours OSC 10/11 report while no responder is attached, for every
+    /// session now and every one started later.
+    pub fn set_theme_all(&self, fg: (u8, u8, u8), bg: (u8, u8, u8)) {
+        *self.theme.lock().unwrap() = Some((fg, bg));
+        for e in self.sessions.lock().unwrap().values() {
+            e.session.set_theme(fg, bg);
+        }
     }
 
     /// A client's first take is a snapshot, so it picks up exactly where the
@@ -527,18 +591,13 @@ impl PtyRegistry {
         }
     }
 
-    /// Writes to the child. The registry lock is held only to find the
-    /// writer; the I/O itself happens under the pane's own lock.
+    /// Queues bytes for the child, whole and in order. Never blocks: the pane's
+    /// writer thread does the I/O (plan-19 D9).
     pub fn write(&self, id: u32, data: &[u8]) -> Result<(), String> {
-        let writer = {
-            let panes = self.panes.lock().unwrap();
-            let h = panes.get(&id).ok_or_else(|| no_pty(id))?;
-            h.session.note_input(data);
-            Arc::clone(&h.writer)
-        };
-        let mut w = writer.lock().unwrap_or_else(|p| p.into_inner());
-        w.write_all(data).map_err(|e| e.to_string())?;
-        w.flush().map_err(|e| e.to_string())
+        let panes = self.panes.lock().unwrap();
+        let h = panes.get(&id).ok_or_else(|| no_pty(id))?;
+        h.session.note_input(data);
+        h.input.send(data.to_vec()).map_err(|_| no_pty(id))
     }
 
     /// The emulator goes first: whatever the child draws after the resize has

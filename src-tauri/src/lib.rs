@@ -7,7 +7,7 @@ use db::{Db, Project};
 use tasks::{Status, Task, TasksLock};
 use veal_core::pty::{DataReady, PtyRegistry, SessionInfo, SpawnOptions};
 use veal_core::session::ClientId;
-use veal_core::{agents, proxy, sysproxy};
+use veal_core::{agents, proxy};
 use watch::Watchers;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -49,8 +49,7 @@ fn watch_root(app: &tauri::AppHandle, watchers: &Watchers, project: &Project) {
 /// default, Follow system. Blocks for the liveness check: at most two
 /// 200 ms connects, only when Windows names a loopback proxy.
 fn resolve_proxy(mode: Option<&str>, port: Option<&str>) -> proxy::Resolved {
-    let mode = mode.and_then(proxy::Mode::parse).unwrap_or(proxy::Mode::System);
-    proxy::resolve(mode, port, sysproxy::lookup, proxy::tcp_probe)
+    proxy::resolve_setting(mode, port)
 }
 
 /// The Settings row: the decision and the exact variables a new pane gets.
