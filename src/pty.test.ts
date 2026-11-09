@@ -17,7 +17,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 
-const { killSession, listSessions, openPty, resolveProxy } = await import("./pty");
+const { killSession, listSessions, onDaemonLost, openPty, parseColor, resolveProxy, setTheme } = await import("./pty");
 
 const fire = (name: string, payload: unknown) => events.get(name)!({ payload });
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -283,6 +283,65 @@ describe("reattaching (plan-19)", () => {
     invoke.mockImplementation(async () => [{ key: "a", cwd: "C:\\x", exited: false, code: null }]);
     expect(await listSessions()).toEqual([{ key: "a", cwd: "C:\\x", exited: false, code: null }]);
     expect(invoke).toHaveBeenCalledWith("pty_list", undefined);
+  });
+});
+
+describe("the background service stopping (plan-19 5.10)", () => {
+  it("tells every subscriber, once per event, and unsubscribing stops it", async () => {
+    let a = 0;
+    let b = 0;
+    const offA = onDaemonLost(() => a++);
+    onDaemonLost(() => b++);
+    await tick();
+    fire("pty-daemon-lost", null);
+    expect([a, b]).toEqual([1, 1]);
+    offA();
+    fire("pty-daemon-lost", null);
+    expect([a, b]).toEqual([1, 2]);
+  });
+
+  it("forgets every id it knew: nothing from the old daemon reaches a pane", async () => {
+    const s = await spawn();
+    await tick();
+    const exits: unknown[] = [];
+    const agents: unknown[] = [];
+    s.onExit((c) => exits.push(c));
+    s.onAgent((x) => agents.push(x));
+    const before = reads();
+    fire("pty-daemon-lost", null);
+    // The new daemon numbers from 1 again: an old id's handlers must be gone.
+    fire("pty-exit", { id: s.id, code: 1 });
+    fire("pty-agent", { id: s.id, agent: "claude" });
+    fire("pty-data", { id: s.id });
+    await tick();
+    expect(exits).toEqual([]);
+    expect(agents).toEqual([]);
+    expect(reads()).toBe(before);
+  });
+
+  it("a Restart opens the same key again", async () => {
+    await spawn();
+    fire("pty-daemon-lost", null);
+    await spawn();
+    const keys = invoke.mock.calls.filter(([c]) => c === "pty_open").map(([, a]) => (a as { key: string }).key);
+    expect(keys.slice(-2)).toEqual(["key-1", "key-1"]);
+  });
+});
+
+describe("terminal colours for the daemon (plan-19 5.10)", () => {
+  it("parses the forms a theme token takes", () => {
+    expect(parseColor("#fff")).toEqual([255, 255, 255]);
+    expect(parseColor(" #0a1B2c ")).toEqual([10, 27, 44]);
+    expect(parseColor("rgb(1, 2, 3)")).toEqual([1, 2, 3]);
+    expect(parseColor("rgba(4 5 6 / 0.5)")).toEqual([4, 5, 6]);
+    expect(parseColor("transparent")).toBeNull();
+    expect(parseColor("#12345")).toBeNull();
+  });
+
+  it("sends pty_theme with the keys Rust takes", async () => {
+    await setTheme([1, 2, 3], [4, 5, 6]);
+    expect(invoke).toHaveBeenCalledWith("pty_theme", { fg: [1, 2, 3], bg: [4, 5, 6] });
+    expect(libRs).toMatch(/fn pty_theme\([^)]*fg: \(u8, u8, u8\), bg: \(u8, u8, u8\)\)/);
   });
 });
 

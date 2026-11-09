@@ -138,6 +138,53 @@ function ensureExitListener() {
   });
 }
 
+// The daemon's connection went away (plan-19 5.10): every shell this page knew
+// is gone with it, so every id-keyed map is stale. Panes show a Restart.
+const lostHandlers = new Set<() => void>();
+let lostListener: Promise<UnlistenFn> | null = null;
+
+function ensureLostListener() {
+  lostListener ??= listen("pty-daemon-lost", () => {
+    dataHandlers.clear();
+    exitHandlers.clear();
+    earlyExits.clear();
+    agentHandlers.clear();
+    latestAgents.clear();
+    lostHandlers.forEach((cb) => cb());
+  });
+}
+
+/** Fires when the background service stops. Returns an unsubscribe function. */
+export function onDaemonLost(cb: () => void): () => void {
+  ensureLostListener();
+  lostHandlers.add(cb);
+  return () => {
+    lostHandlers.delete(cb);
+  };
+}
+
+export type Rgb = [number, number, number];
+
+/** `#rgb`, `#rrggbb` or `rgb(r, g, b)`, as a computed CSS token may read. */
+export function parseColor(css: string): Rgb | null {
+  const s = css.trim();
+  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(s);
+  if (short) return [1, 2, 3].map((i) => parseInt(short[i] + short[i], 16)) as Rgb;
+  const long = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(s);
+  if (long) return [1, 2, 3].map((i) => parseInt(long[i], 16)) as Rgb;
+  const fn = /^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i.exec(s);
+  if (fn) return [1, 2, 3].map((i) => Math.min(255, Number(fn[i]))) as Rgb;
+  return null;
+}
+
+/**
+ * The terminal colours, so a shell asking for them (OSC 10/11) while no window
+ * is attached gets this theme's answer (plan-19 section 3).
+ */
+export function setTheme(fg: Rgb, bg: Rgb): Promise<void> {
+  return invoke("pty_theme", { fg, bg });
+}
+
 /** One row of `pty_list`: what is running, whatever the page knows about. */
 export function listSessions(): Promise<SessionInfo[]> {
   return invoke<SessionInfo[]>("pty_list");
@@ -188,6 +235,7 @@ async function open(opts: OpenOptions): Promise<OpenedPane> {
 }
 
 export async function openPty(opts: OpenOptions, onData: OnData): Promise<PtySession> {
+  ensureLostListener();
   ensureExitListener();
   ensureAgentListener();
   ensureDataListener();
