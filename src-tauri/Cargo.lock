@@ -4940,7 +4940,9 @@ version = "0.1.2"
 dependencies = [
  "serde_json",
  "tokio",
+ "tray-icon",
  "veal-core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

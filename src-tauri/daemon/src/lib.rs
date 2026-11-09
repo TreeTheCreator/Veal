@@ -4,6 +4,9 @@
 //! task per connection owns the pipe's write half; the PTY threads never
 //! touch the pipe.
 
+#[cfg(windows)]
+pub mod tray;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -462,9 +465,10 @@ fn take(state: &State, sid: u32, client: ClientId) -> Option<Vec<u8>> {
 }
 
 /// Accept connections on `name` until the process exits. Returns `Ok` at once
-/// if another daemon already serves the name.
+/// if another daemon already serves the name. `on_listening` runs once the
+/// pipe is this daemon's, so a daemon that lost the race shows no tray.
 #[cfg(windows)]
-pub async fn run(state: Arc<State>, name: &str, idle: Duration) -> std::io::Result<()> {
+pub async fn run(state: Arc<State>, name: &str, idle: Duration, on_listening: impl FnOnce()) -> std::io::Result<()> {
     use veal_core::pipe;
     let mut server = match pipe::server(name, true) {
         Ok(s) => s,
@@ -476,6 +480,7 @@ pub async fn run(state: Arc<State>, name: &str, idle: Duration) -> std::io::Resu
     };
     vlog!("[daemon] listening on {name}, build {}", state.build);
     state.start_agents();
+    on_listening();
 
     let idle_state = Arc::clone(&state);
     tokio::spawn(async move {
