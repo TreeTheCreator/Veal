@@ -204,7 +204,7 @@ pub fn start(registry: Arc<PtyRegistry>, sink: impl Fn(PaneAgent) + Send + 'stat
                     if cfg!(debug_assertions) {
                         let ms = t.elapsed().as_secs_f64() * 1000.0;
                         if ms > 10.0 {
-                            eprintln!("[agents] refresh {} procs in {ms:.1} ms", table.len());
+                            crate::vlog!("[agents] refresh {} procs in {ms:.1} ms", table.len());
                         }
                     }
                     tick(&table, &panes, &mut last, &sink);

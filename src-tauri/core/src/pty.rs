@@ -417,7 +417,7 @@ impl PtyRegistry {
                             if cfg!(debug_assertions) {
                                 bytes += n;
                                 if window.elapsed().as_secs() >= 1 {
-                                    eprintln!("[pty {id}] {} KB/s read", bytes / 1024);
+                                    crate::vlog!("[pty {id}] {} KB/s read", bytes / 1024);
                                     bytes = 0;
                                     window = std::time::Instant::now();
                                 }
