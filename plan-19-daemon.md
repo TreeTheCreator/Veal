@@ -40,8 +40,8 @@ Left for a person: acceptance 1 and 2 with a real `claude` on a long task (only 
 stand-in was used, so no prompt, paste or Ctrl+C into a reattached agent); clicking
 the tray icon itself (left click and Open Veal launch `veal.exe`; Stop everything
 asks with a message box when agents run); seeing the icon and its tooltip in the
-taskbar (only the log was checked); Explorer restarting while the icon shows (not
-handled: the icon would be gone until the next hide and show).
+taskbar (only the log was checked); restarting Explorer while the icon shows
+(`tray-icon` re-adds it on `TaskbarCreated`; not tried).
 
 Results for 5: shells live in `veal-daemon.exe`, behind a user-only named pipe, and
 the app is a client of it (tasks 5.1–5.11, one commit each). `cargo test --workspace`
