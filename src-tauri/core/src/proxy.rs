@@ -371,6 +371,15 @@ pub fn tcp_probe(addr: SocketAddr) -> bool {
 /// The pane's proxy variables. Keys are lowercase: portable-pty lowercases
 /// env keys on Windows, so a second casing would only replace the first.
 /// `bypass` is the user's Bypass setting (`None` for the default); Windows'
+/// The Settings value as stored: a missing or unknown mode is the default,
+/// Follow system. Blocks for the liveness check: at most two 200 ms connects,
+/// only when Windows names a loopback proxy. The app's Settings row and the
+/// daemon's spawn both use this, so Settings shows what a new pane gets.
+pub fn resolve_setting(mode: Option<&str>, port: Option<&str>) -> Resolved {
+    let mode = mode.and_then(Mode::parse).unwrap_or(Mode::System);
+    resolve(mode, port, crate::sysproxy::lookup, tcp_probe)
+}
+
 /// own kept entries are appended.
 pub fn proxy_env(r: &Resolved, bypass: Option<&str>) -> Vec<(String, String)> {
     let Some(url) = r.url.as_deref() else { return Vec::new() };
