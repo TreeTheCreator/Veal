@@ -43,8 +43,15 @@ fn main() {
         }
     };
     let state = State::new(build);
+    // Only the user's own pipe gets a tray: a test daemon on a pipe of its
+    // own must not put icons in the taskbar.
+    let own_pipe = pipe::pipe_name().is_ok_and(|n| n == name);
     let tray_state = std::sync::Arc::clone(&state);
-    let on_listening = move || veal_daemon::tray::start(tray_state);
+    let on_listening = move || {
+        if own_pipe {
+            veal_daemon::tray::start(tray_state);
+        }
+    };
     if let Err(e) = rt.block_on(veal_daemon::run(state, &name, idle, on_listening)) {
         vlog!("[daemon] stopped: {e}");
     }
