@@ -389,6 +389,7 @@ pub fn run() {
         .manage(Arc::new(PtyRegistry::default()))
         .manage(TasksLock::default())
         .setup(|app| {
+            veal_core::log::init("app");
             // %APPDATA%\com.veal.app\veal.db on Windows.
             let path = app.path().app_data_dir()?.join("veal.db");
             app.manage(Db::open(&path)?);

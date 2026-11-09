@@ -2,6 +2,7 @@
 //! on Tauri, so all of it can run without a window.
 
 pub mod agents;
+pub mod log;
 pub mod proxy;
 pub mod pty;
 pub mod session;
