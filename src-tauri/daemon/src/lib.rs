@@ -72,6 +72,8 @@ impl Held {
 pub struct State {
     pub registry: Arc<PtyRegistry>,
     conns: Mutex<HashMap<u64, mpsc::UnboundedSender<Out>>>,
+    /// Connections from a window (`hello` role `desktop`, plan-19 E1).
+    desktops: Mutex<HashSet<u64>>,
     next_conn: AtomicU64,
     build: String,
     /// When the daemon last had a connection or a live session.
@@ -89,6 +91,7 @@ impl State {
         Arc::new(State {
             registry: Arc::new(PtyRegistry::default()),
             conns: Mutex::new(HashMap::new()),
+            desktops: Mutex::new(HashSet::new()),
             next_conn: AtomicU64::new(1),
             build,
             busy_at: Mutex::new(Instant::now()),
@@ -126,6 +129,25 @@ impl State {
         (self.exit)();
     }
 
+    /// Windows connected now.
+    pub fn desktops(&self) -> usize {
+        self.desktops.lock().unwrap().len()
+    }
+
+    /// What the tray shows: nothing while a window is attached or nothing is
+    /// running (plan-19 section 8).
+    pub fn tray_view(&self) -> Option<TrayView> {
+        if self.desktops() > 0 {
+            return None;
+        }
+        let sessions = self.registry.live_count();
+        if sessions == 0 {
+            return None;
+        }
+        let agents = self.registry.agents().len();
+        Some(TrayView { tooltip: tooltip(sessions, agents), agents })
+    }
+
     /// Whether the daemon has had nothing to do for `idle`.
     pub fn idle_for(&self, idle: Duration) -> bool {
         let mut busy_at = self.busy_at.lock().unwrap();
@@ -135,6 +157,20 @@ impl State {
         }
         busy_at.elapsed() >= idle
     }
+}
+
+/// The tray icon's state while no window is attached.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrayView {
+    pub tooltip: String,
+    pub agents: usize,
+}
+
+/// `Veal: 2 agents running`, or the shells when no agent is.
+pub fn tooltip(sessions: usize, agents: usize) -> String {
+    let (n, what) = if agents > 0 { (agents, "agent") } else { (sessions, "shell") };
+    let s = if n == 1 { "" } else { "s" };
+    format!("Veal: {n} {what}{s} running")
 }
 
 fn reply(id: u64, result: Result<ReplyBody, String>) -> Vec<u8> {
@@ -197,6 +233,9 @@ where
                         let _ = tx.send(Out::Frame(reply(req.id, Ok(body))));
                         if matched {
                             state.conns.lock().unwrap().insert(conn, tx.clone());
+                            if role == "desktop" {
+                                state.desktops.lock().unwrap().insert(conn);
+                            }
                         }
                         continue;
                     }
@@ -226,6 +265,7 @@ where
     // The pipe is gone or not to be trusted: every client it held goes, and
     // every shell stays.
     state.conns.lock().unwrap().remove(&conn);
+    state.desktops.lock().unwrap().remove(&conn);
     let all: Vec<_> = held.lock().unwrap().all.drain().collect();
     for (id, client) in all {
         state.registry.detach(id, client);
@@ -549,8 +589,12 @@ mod tests {
     }
 
     async fn hello(state: &Arc<State>, protocol: u32) -> (Peer, Result<ReplyBody, String>) {
+        hello_as(state, protocol, "test").await
+    }
+
+    async fn hello_as(state: &Arc<State>, protocol: u32, role: &str) -> (Peer, Result<ReplyBody, String>) {
         let mut p = connect(state);
-        let id = p.send(ClientMsg::Hello { protocol, build: "t".into(), role: "test".into() }).await;
+        let id = p.send(ClientMsg::Hello { protocol, build: "t".into(), role: role.into() }).await;
         let r = p.reply(id).await;
         (p, r)
     }
@@ -732,5 +776,48 @@ mod tests {
         assert!(state.idle_for(Duration::from_millis(50)));
         let (_p, _) = hello(&state, PROTOCOL).await;
         assert!(!state.idle_for(Duration::ZERO), "a connection keeps it busy");
+    }
+
+    #[test]
+    fn tooltip_names_agents_first() {
+        assert_eq!(tooltip(3, 0), "Veal: 3 shells running");
+        assert_eq!(tooltip(1, 0), "Veal: 1 shell running");
+        assert_eq!(tooltip(3, 1), "Veal: 1 agent running");
+        assert_eq!(tooltip(3, 2), "Veal: 2 agents running");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_tray_shows_only_with_a_shell_and_no_window() {
+        let state = test_state();
+        assert_eq!(state.tray_view(), None, "nothing running");
+        let (mut p, _) = hello_as(&state, PROTOCOL, "desktop").await;
+        let (session, _) = opened(p.req(spawn_msg("tray")).await);
+        ready_shell(&mut p, session).await;
+        assert_eq!(state.desktops(), 1);
+        assert_eq!(state.tray_view(), None, "a window is attached");
+        drop(p);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while state.desktops() > 0 {
+            assert!(Instant::now() < deadline, "connection did not close");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let view = state.tray_view().expect("a shell is running with no window");
+        assert_eq!(view, TrayView { tooltip: "Veal: 1 shell running".into(), agents: 0 });
+        let id = state.registry.id_for("tray").unwrap();
+        state.registry.note_agent(id, Some("claude".into()));
+        assert_eq!(state.tray_view().unwrap().tooltip, "Veal: 1 agent running");
+        state.registry.kill_all();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while state.tray_view().is_some() {
+            assert!(Instant::now() < deadline, "shell did not exit");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_mismatched_desktop_is_not_attached() {
+        let state = test_state();
+        let (_p, _) = hello_as(&state, PROTOCOL + 1, "desktop").await;
+        assert_eq!(state.desktops(), 0);
     }
 }
