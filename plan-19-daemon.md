@@ -4,8 +4,8 @@ Status: build order 1 (the gate) RUN 2026-11-07: passed, with the conditions
 below. Step 2 BUILT and checked 2026-11-07. Step 3 BUILT 2026-11-08, with two
 plan-15 checks left for a person (below). Step 4 BUILT 2026-11-08. Step 5 BUILT
 2026-11-09, with three checks left for a person (below). Step 6 BUILT 2026-11-09,
-with the real-agent and tray-click checks left for a person (below). Steps 7–8
-not started.
+with the real-agent and tray-click checks left for a person (below). Step 7
+broken into tasks 2026-11-09 (section "Step 7 tasks"). Steps 7–8 not started.
 
 Results for 6: closing with agents running asks Keep running (default), Stop and
 quit, or Cancel, and `closeWithAgents` (Settings, or the dialog's "Don't ask
@@ -1238,6 +1238,205 @@ On the release build, as for 5.12:
    a window attaches; the setting's `keep` and `stop` skip the dialog.
 7. Write the results at the top of this file.
 
+## Step 7 tasks
+
+Section 8's updates and packaging: the installer carries the daemon, an update
+stops it first, the installer and uninstaller stop it as a backstop, and a daemon
+of another protocol gets a prompt instead of a pane error. Publishing and the
+version bump stay in step 8.
+
+**Checked against Tauri at the start of this step** (the known unknown):
+
+- CLI 2.11.4, `tauri-build` 2.6.3, `tauri-utils` 2.9.3.
+  `bundle.windows.nsis.installerHooks` exists. It takes a `.nsh` file with
+  `NSIS_HOOK_PREINSTALL`, `POSTINSTALL`, `PREUNINSTALL` and `POSTUNINSTALL`
+  macros.
+- In the NSIS template, `NSIS_HOOK_PREINSTALL` runs **before**
+  `CheckIfAppIsRunning "veal.exe"`, and that check looks only at the main exe,
+  never at a sidecar. The template sets `$PassiveMode` (`/P`, which the updater
+  passes) and `$UpdateMode` (`/UPDATE`). `nsis_tauri_utils::FindProcess` is
+  available to hooks.
+- `externalBin: ["binaries/veal-daemon"]` takes
+  `binaries/veal-daemon-x86_64-pc-windows-msvc.exe` and installs it as
+  `veal-daemon.exe` next to `veal.exe`, which is where `client::launch` looks.
+- `tauri-build` copies every `externalBin` into `target\<profile>\` on **every**
+  cargo build of `veal`: dev, `cargo test` and release alike. It removes the
+  old file with `unwrap()` and fails if the source is missing.
+
+**Decisions this breakdown makes against section 8** (change them here if wrong):
+
+- **F1. `externalBin` and the hooks live in a bundle-only config,**
+  `src-tauri/tauri.bundle.conf.json`, merged with `tauri build --config`. In the
+  main config, the copy above would break a fresh clone with no `binaries/` file,
+  and could overwrite `target\debug\veal-daemon.exe`, which `cargo test` just
+  built, with a stale copy. It would also panic the build whenever a daemon is
+  running from that file. The CLI hands the merged config to `tauri-build`, so
+  only bundling sees it. `pnpm bundle` and `release.mjs` always pass it.
+- **F2. The pre-install hook asks about `veal.exe` before it touches the
+  daemon.** It runs the template's own `CheckIfAppIsRunning` first. Otherwise a
+  user who cancels at "Veal is running" would already have lost every shell. The
+  template's later check then finds nothing.
+- **F3. The daemon is stopped gracefully, then by force.**
+  `veal-daemon.exe --stop` connects to the user's pipe and sends `shutdown`,
+  which is allowed even on a protocol mismatch, then waits up to 3 s for the pipe
+  to go. The hook runs the **installed** (old) exe, which matches the running
+  daemon. If the daemon is still there after that, `taskkill /F /IM
+  veal-daemon.exe` runs.
+- **F4. The installer only asks when a person is at it.** When `$PassiveMode`
+  or `$UpdateMode` is set, the app has already warned and stopped the daemon,
+  so the hook stops anything left without asking. A manual install or uninstall
+  with the daemon running asks first ("Installing ends every shell Veal is
+  running in the background", OK/Cancel; Cancel aborts).
+- **F5. The update is tested under a separate identity.** The test builds merge
+  `tauri.test.conf.json`: `productName` "Veal Test", `identifier`
+  `com.veal.test`, versions 0.1.90 and 0.1.91, an updater endpoint on
+  `http://127.0.0.1:8765/latest.json` with `dangerousInsecureTransportProtocol`,
+  and signing with `~/.tauri/veal-updater.key`. The installed Veal and its
+  `veal.db` are not touched. The pipe name is per user, not per identity, so the
+  real Veal must not run during the test. Nothing is published.
+- **F6. Mismatch Restart works over the old protocol.** `list` and `shutdown` are
+  the two messages a mismatched client may send (5.5). So Restart sends
+  `shutdown` to the old daemon, waits for its pipe to go, and connects again,
+  which launches the new one.
+
+Order: 7.1, then 7.2 (its hook needs the bundled exe). 7.3 comes before 7.2's
+hook can be tried. 7.4 and 7.5 do not depend on the others. Each task is one
+commit, and `cargo test --workspace`, `pnpm test` and clippy pass after each.
+
+### 7.1 Bundle the daemon (`scripts/build-daemon.mjs`, `tauri.bundle.conf.json`, `release.mjs`)
+
+1. `build-daemon.mjs --sidecar`: after the release build, copy
+   `target\release\veal-daemon.exe` to
+   `src-tauri\binaries\veal-daemon-x86_64-pc-windows-msvc.exe`. If the copy
+   fails because the file is locked, say which process holds it. Add
+   `src-tauri/binaries/` to `.gitignore`.
+2. `src-tauri/tauri.bundle.conf.json` (F1):
+   - `build.beforeBuildCommand`: `node scripts/build-daemon.mjs --release
+     --sidecar && pnpm build`
+   - `bundle.externalBin`: `["binaries/veal-daemon"]`
+   - `bundle.windows.nsis.installerHooks`: `windows/hooks.nsh` (an empty file
+     until 7.2)
+3. `package.json`: `"bundle": "tauri build --config
+   src-tauri/tauri.bundle.conf.json"`. `release.mjs` runs `pnpm bundle`
+   instead of `pnpm tauri build`.
+4. `release.mjs` checks, before it signs off, that the generated
+   `target\release\nsis\x64\installer.nsi` names `veal-daemon.exe`. A plain
+   `pnpm tauri build` makes an installer with no daemon, and that check stops it
+   from being released.
+5. Update the comment at the top of `build-daemon.mjs`, and step 5.12's build
+   line, to `pnpm bundle`.
+
+Done when: `pnpm bundle` makes an installer whose `installer.nsi` names the
+daemon; `release.mjs --dry-run` passes; `cargo test --workspace` passes on a
+checkout with no `binaries/` folder; `pnpm tauri dev` still starts a daemon.
+
+### 7.2 Installer hooks (`src-tauri/windows/hooks.nsh`)
+
+1. A `StopDaemon` macro:
+   - `nsis_tauri_utils::FindProcess "veal-daemon.exe"`. If it is not running,
+     stop here.
+   - Unless `$PassiveMode` or `$UpdateMode` is set (F4), `MessageBox
+     MB_OKCANCEL|MB_ICONEXCLAMATION` "Installing ends every shell Veal is running
+     in the background." Cancel: `Abort`.
+   - `nsExec::Exec '"$INSTDIR\veal-daemon.exe" --stop'` if that file exists
+     (F3).
+   - `FindProcess` again. If it is still running,
+     `nsExec::Exec 'taskkill /F /IM veal-daemon.exe'`, then wait up to 2 s for it
+     to go.
+2. `NSIS_HOOK_PREINSTALL`: `!insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe"
+   "${PRODUCTNAME}"` (F2), then `StopDaemon`.
+3. `NSIS_HOOK_PREUNINSTALL`: the same, with the message saying "Uninstalling".
+4. Check that the generated `installer.nsi` places the hook ahead of the file
+   copy, and that the macros compile (makensis runs as part of `pnpm bundle`).
+
+Done when: the bundle builds. The behaviour is checked in 7.6.
+
+### 7.3 `veal-daemon.exe --stop` (`daemon/src/main.rs`, `core/src/client.rs`)
+
+1. `client::stop(name) -> Stopped`, where `Stopped` is one of `NotRunning`,
+   `Stopped` or `StillRunning`. It connects with role `installer` and sends
+   `Shutdown`, which is valid on any protocol. Then `wait_gone(name)`, which
+   gets a `bool` result (today it returns nothing), up to 3 s.
+2. `main.rs`: `--stop` (with `--pipe` optional, as now). It runs `client::stop`
+   on a current-thread runtime and exits 0, 1 or 2 to match. It never starts a
+   daemon or a tray.
+3. Integration tests: `--stop` on a test pipe ends a running daemon and its
+   shells (exit 0); on a pipe with no daemon it exits 1.
+
+Done when: the tests pass.
+
+### 7.4 Stop the daemon before an update (`UpdateCard.tsx`, `lib.rs`, `bridge.rs`, `pty.ts`)
+
+1. `Bridge::shutdown_and_wait()`: `shutdown`, then wait for the pipe to go (up to
+   3 s). It returns whether it went. Command `pty_shutdown { }`, and
+   `pty.ts: shutdownDaemon()`.
+2. `UpdateCard.install`: download first, then `flushAll`, then
+   `setCloseMode(false)`, then `await shutdownDaemon()`, then `update.install()`.
+   A shutdown that times out is logged and the install goes ahead: the hook is
+   the backstop (F3, F4).
+3. `atStake`'s warning stays, since agents are lost on update. Reword it to say
+   so: "Updating stops Veal's background service: 2 running agents will end."
+   Unsaved edits are listed as before.
+4. If `install()` throws after the shutdown, the panes show "background service
+   stopped" with Restart (5.10) and the card shows the error. Nothing else is
+   needed.
+5. Tests: `pty.test.ts` checks the command name and keys against `lib.rs`.
+   A test of the order (download, flush, close mode, shutdown, install) mocks
+   the updater and `pty`.
+
+Done when: tests pass.
+
+### 7.5 The version-mismatch prompt (`bridge.rs`, `lib.rs`, `App.tsx`, new `DaemonMismatch.tsx`)
+
+1. `Bridge::client()` keeps `StartError::Mismatch { sessions }` as a kind, not
+   only a string. It emits `pty-daemon-mismatch { sessions }` once per
+   connect attempt, and pane opens fail with the same text as now.
+2. Command `pty_replace_daemon`: connect without the version check, send
+   `Shutdown`, wait for the pipe to go, then connect normally, which launches
+   this build's daemon (F6).
+3. `DaemonMismatch.tsx`: a modal, "2 sessions are running on an older
+   background service. Restart ends them and starts this version's." Buttons:
+   **Quit** (closes the window, sending nothing) and **Restart** (focused).
+   After Restart, the panes remount, as after the 5.10 footer's Restart.
+4. A test-only `--protocol N` flag in the daemon makes a mismatched daemon for
+   the tests. It is compiled only with `debug_assertions`.
+5. Tests: an integration test showing that `connect_or_launch` against a
+   `--protocol 99` daemon with a session gives `Mismatch`, and that the replace
+   path then ends it and connects to a new one. A TS test of the modal's two
+   buttons.
+
+Done when: tests pass.
+
+### 7.6 Live checks
+
+Under the test identity (F5), with the real Veal closed. Build 0.1.90 and 0.1.91
+with `pnpm bundle --config src-tauri/tauri.test.conf.json`. Serve 0.1.91's
+installer and `latest.json` from `127.0.0.1:8765`.
+
+1. Install 0.1.90. Its install folder has `veal.exe` and `veal-daemon.exe`.
+   A pane works, and the daemon runs from the install folder.
+2. Acceptance 12, update: with an agent running in 0.1.90, the update card
+   warns, and Update anyway stops the daemon. 0.1.91 installs with no prompt,
+   relaunches, and starts its own daemon (log: new build, new PID). No old
+   process is left.
+3. Manual install over a running app: run 0.1.91's installer with 0.1.90 open
+   and an agent running. "Veal is running" comes first; cancelling it leaves
+   the agent running. Running it again and accepting both prompts installs.
+4. Manual install with only the daemon left (Keep running, window closed): the
+   shells prompt appears, then the install goes through, with no daemon left.
+5. Acceptance 12, uninstall: with the daemon running, uninstall asks, then
+   removes the folder completely. No `veal-daemon.exe` process and no locked
+   file remain.
+6. Mismatch, on a debug build: start a `--protocol 99` daemon with a shell on
+   the dev pipe, then launch the app. The prompt shows the session count;
+   Restart gives working panes on a new daemon.
+7. `pnpm release --dry-run` passes and the installer it builds carries the
+   daemon.
+8. Clean up: uninstall Veal Test, and delete `%APPDATA%\com.veal.test` and
+   `%LOCALAPPDATA%\com.veal.test`.
+9. Write the results at the top of this file. Left for a person: SmartScreen
+   and antivirus on a clean machine (known unknown).
+
 ## Tests
 
 Rust:
@@ -1317,9 +1516,8 @@ Run on the release build, with a real `claude` session unless stated.
   launching without the flag.
 - The `veal` launchers that `pty.rs:228` refers to are not in this repo.
   Confirm they do not assume a shell dies with the window.
-- Tauri's NSIS details are from memory and not yet checked against the current
-  version: the `installerHooks` setting, and how its running-app check treats
-  a sidecar. Confirm both at the start of step 7.
+- ~~Tauri's NSIS details.~~ Checked 2026-11-09 against 2.11.4: `installerHooks`
+  exists, and the running-app check ignores sidecars. See "Step 7 tasks".
 
 ## Rejected
 
@@ -1361,3 +1559,6 @@ Run on the release build, with a real `claude` session unless stated.
   flag on the bridge, and the setting only covers agents.
 - 2026-11-09: step 6 built and checked live on the release build. Results at the
   top; real-agent and tray-click checks left for a person.
+- 2026-11-09: step 7 broken into tasks (section "Step 7 tasks"). Tauri's NSIS
+  hooks and sidecar naming checked against 2.11.4; `externalBin` moved to a
+  bundle-only config (F1), since `tauri-build` copies it on every cargo build.
