@@ -6,12 +6,18 @@ import { Icon } from "../Icon";
 import { PANE_CAP } from "../layout/tree";
 import { normalizePath, tilde } from "../paths";
 import { AGENTS } from "../pty";
-import { SHELL_CHOICES, useSettings, type ShellChoice } from "../settings/store";
+import { SHELL_CHOICES, useSettings, type CloseWithAgents, type ShellChoice } from "../settings/store";
 import { TAB_LABEL, useUi } from "../ui";
 import { ProxySettings } from "./ProxySettings";
 
+const CLOSE_CHOICES: Array<[CloseWithAgents, string]> = [
+  ["ask", "Ask"],
+  ["keep", "Keep running"],
+  ["stop", "Stop them"],
+];
+
 export function SettingsView() {
-  const { theme, shell, restoreLayout, setTheme, setShell, setRestoreLayout } = useSettings();
+  const { theme, shell, restoreLayout, closeWithAgents, setTheme, setShell, setRestoreLayout, setCloseWithAgents } = useSettings();
   const lastTab = useUi((s) => s.lastTab);
   const setView = useUi((s) => s.setView);
   const [home, setHome] = useState("~");
@@ -50,6 +56,16 @@ export function SettingsView() {
           </select>
         </div>
         <ProxySettings />
+        <div className="srow">
+          <div className="lbl"><b>Closing with agents running</b><span>Keep running leaves every shell in the background, with a tray icon</span></div>
+          <div className="seg" role="radiogroup">
+            {CLOSE_CHOICES.map(([value, label]) => (
+              <button key={value} className={closeWithAgents === value ? "on" : ""} onClick={() => setCloseWithAgents(value)}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="srow">
           <div className="lbl"><b>New projects go in</b><span>Used when you leave the root directory blank</span></div>
           <span className="mono">{home}</span>

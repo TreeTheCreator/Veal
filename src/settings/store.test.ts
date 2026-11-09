@@ -4,7 +4,7 @@ const settingsGetAll = vi.fn<() => Promise<Record<string, string>>>();
 const settingsSet = vi.fn<(k: string, v: string) => Promise<void>>(async () => {});
 vi.mock("../db", () => ({ db: { settingsGetAll: () => settingsGetAll(), settingsSet: (k: string, v: string) => settingsSet(k, v) } }));
 
-const { useSettings, isTheme, parsePort, DEFAULT_BYPASS } = await import("./store");
+const { useSettings, isTheme, isCloseWithAgents, parsePort, DEFAULT_BYPASS } = await import("./store");
 
 beforeEach(() => {
   settingsSet.mockClear();
@@ -25,6 +25,24 @@ describe("theme setting (plan-11)", () => {
     useSettings.getState().setTheme("light");
     expect(useSettings.getState().theme).toBe("light");
     expect(settingsSet).toHaveBeenCalledWith("theme", "light");
+  });
+});
+
+describe("closing with agents running (plan-19 6.4)", () => {
+  it("defaults to ask, parses the three choices, and falls back to ask", async () => {
+    for (const [raw, want] of [["keep", "keep"], ["stop", "stop"], ["ask", "ask"], ["later", "ask"], [undefined, "ask"]] as const) {
+      settingsGetAll.mockResolvedValueOnce(raw === undefined ? {} : { close_with_agents: raw });
+      await useSettings.getState().load();
+      expect(useSettings.getState().closeWithAgents, String(raw)).toBe(want);
+    }
+    expect(isCloseWithAgents("keep")).toBe(true);
+    expect(isCloseWithAgents("quit")).toBe(false);
+  });
+
+  it("writes through", () => {
+    useSettings.getState().setCloseWithAgents("keep");
+    expect(useSettings.getState().closeWithAgents).toBe("keep");
+    expect(settingsSet).toHaveBeenCalledWith("close_with_agents", "keep");
   });
 });
 

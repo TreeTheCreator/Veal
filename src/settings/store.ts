@@ -8,6 +8,8 @@ export type ShellChoice = "auto" | "pwsh" | "powershell" | "cmd" | "wsl";
 export type Theme = "system" | "dark" | "light";
 /** Plan-18: where a new pane's proxy comes from. */
 export type ProxyMode = "off" | "manual" | "system";
+/** Plan-19: what closing the window does while agents are running. */
+export type CloseWithAgents = "ask" | "keep" | "stop";
 
 /** Mirrors `proxy::DEFAULT_BYPASS` in Rust. */
 export const DEFAULT_BYPASS = "localhost,127.0.0.1,::1,.local";
@@ -29,6 +31,7 @@ interface SettingsState {
   proxyPort: string;
   /** `no_proxy` for new panes, comma separated; applies in every mode. */
   proxyBypass: string;
+  closeWithAgents: CloseWithAgents;
   /** Loads every key; returns the raw map so the caller can read `layout` too. */
   load(): Promise<Record<string, string>>;
   setTheme(theme: Theme): void;
@@ -37,6 +40,7 @@ interface SettingsState {
   setProxyMode(mode: ProxyMode): void;
   setProxyPort(port: string): void;
   setProxyBypass(bypass: string): void;
+  setCloseWithAgents(choice: CloseWithAgents): void;
 }
 
 export const isTheme = (v: string | undefined): v is Theme => v === "system" || v === "dark" || v === "light";
@@ -51,6 +55,7 @@ export function applyTheme(theme: Theme): void {
   if (theme === "system") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.dataset.theme = theme;
 }
+export const isCloseWithAgents = (v: string | undefined): v is CloseWithAgents => v === "ask" || v === "keep" || v === "stop";
 const isProxyMode = (v: string | undefined): v is ProxyMode => v === "off" || v === "manual" || v === "system";
 const isShell = (v: string | undefined): v is ShellChoice =>
   SHELL_CHOICES.some((c) => c.value === v);
@@ -66,6 +71,7 @@ export const useSettings = create<SettingsState>((set) => ({
   proxyMode: "system",
   proxyPort: "",
   proxyBypass: DEFAULT_BYPASS,
+  closeWithAgents: "ask",
 
   async load() {
     const all = await db.settingsGetAll();
@@ -84,6 +90,7 @@ export const useSettings = create<SettingsState>((set) => ({
       proxyMode,
       proxyPort: all.proxy_port ?? "",
       proxyBypass: all.proxy_bypass ?? DEFAULT_BYPASS,
+      closeWithAgents: isCloseWithAgents(all.close_with_agents) ? all.close_with_agents : "ask",
     });
     return all;
   },
@@ -112,6 +119,10 @@ export const useSettings = create<SettingsState>((set) => ({
   setProxyBypass(proxyBypass) {
     set({ proxyBypass });
     persist("proxy_bypass", proxyBypass);
+  },
+  setCloseWithAgents(closeWithAgents) {
+    set({ closeWithAgents });
+    persist("close_with_agents", closeWithAgents);
   },
 }));
 
