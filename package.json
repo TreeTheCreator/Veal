@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "release": "node scripts/release.mjs",
+    "daemon": "node scripts/build-daemon.mjs",
     "test": "vitest run"
   },
   "dependencies": {
