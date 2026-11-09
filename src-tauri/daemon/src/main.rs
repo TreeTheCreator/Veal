@@ -12,22 +12,22 @@ fn main() {
     std::panic::set_hook(Box::new(|info| vlog!("[daemon] panic: {info}")));
 
     // `--build <id>`: which binary this is, for the dev build check (plan-19 D6).
+    // `--pipe <name>`: the app names the pipe it will connect to.
+    // `--idle-ms <n>`: tests shorten the idle exit.
     let mut args = std::env::args().skip(1);
     let mut build = format!("release-{}", env!("CARGO_PKG_VERSION"));
+    let mut pipe_arg = None;
+    let mut idle = IDLE;
     while let Some(a) = args.next() {
-        if a == "--build" {
-            if let Some(b) = args.next() {
-                build = b;
-            }
+        match (a.as_str(), args.next()) {
+            ("--build", Some(v)) => build = v,
+            ("--pipe", Some(v)) => pipe_arg = Some(v),
+            ("--idle-ms", Some(v)) => idle = v.parse().map(Duration::from_millis).unwrap_or(IDLE),
+            _ => {}
         }
     }
-    let idle = std::env::var("VEAL_IDLE_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(IDLE);
 
-    let name = match pipe::pipe_name() {
+    let name = match pipe_arg.map(Ok).unwrap_or_else(pipe::pipe_name) {
         Ok(n) => n,
         Err(e) => {
             vlog!("[daemon] no pipe name: {e}");
