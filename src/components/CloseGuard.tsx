@@ -113,10 +113,9 @@ export function CloseGuard() {
           </div>
         )}
         {agents.length > 0 && (
-          <label className="field">
-            <span>
-              <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> Don't ask again (change it in Settings)
-            </span>
+          <label className="remember">
+            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+            Don't ask again (change it in Settings)
           </label>
         )}
         <div className="row">

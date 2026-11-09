@@ -252,6 +252,7 @@ input, select { font: inherit; color: var(--text); background: var(--bg-sunk); b
 .field small.error { color: var(--agent); }
 .field input, .field select { width: 100%; }
 .field-row { display: flex; gap: 8px; }
+.remember { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); }
 .field-row input { flex: 1; min-width: 0; }
 .row { display: flex; gap: 8px; justify-content: flex-end; }
 .btn:hover:not(:disabled) { border-color: var(--muted); }
