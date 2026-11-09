@@ -186,7 +186,8 @@ pub enum ClientMsg {
     },
     /// Attach to `key`, never spawn.
     Attach { key: String, cols: u16, rows: u16, responder: bool, controller: bool },
-    Detach { key: String },
+    /// `client` is the one `Opened` named: a page may attach twice to one key.
+    Detach { key: String, client: u32 },
     Resize { key: String, cols: u16, rows: u16 },
     Kill { key: String },
     Forget { key: String },
@@ -203,7 +204,7 @@ pub enum ReplyBody {
     Hello { protocol: u32, build: String, sessions: usize },
     List { sessions: Vec<SessionInfo> },
     /// `session` is the number output frames carry for this key.
-    Opened { session: u32, exited: bool, code: Option<i32>, agent: Option<String> },
+    Opened { session: u32, client: u32, exited: bool, code: Option<i32>, agent: Option<String> },
     Ok,
 }
 
@@ -328,7 +329,7 @@ mod tests {
                 controller: true,
             },
             ClientMsg::Attach { key: "k".into(), cols: 1, rows: 2, responder: false, controller: false },
-            ClientMsg::Detach { key: "k".into() },
+            ClientMsg::Detach { key: "k".into(), client: 2 },
             ClientMsg::Resize { key: "k".into(), cols: 3, rows: 4 },
             ClientMsg::Kill { key: "k".into() },
             ClientMsg::Forget { key: "k".into() },
@@ -351,7 +352,7 @@ mod tests {
             },
             DaemonMsg::Reply {
                 id: 3,
-                result: Ok(ReplyBody::Opened { session: 4, exited: false, code: None, agent: Some("claude".into()) }),
+                result: Ok(ReplyBody::Opened { session: 4, client: 1, exited: false, code: None, agent: Some("claude".into()) }),
             },
             DaemonMsg::Reply { id: 4, result: Ok(ReplyBody::Ok) },
             DaemonMsg::Reply { id: 5, result: Err("already running 4 terminals".into()) },

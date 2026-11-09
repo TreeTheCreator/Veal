@@ -4935,6 +4935,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "veal-daemon"
+version = "0.1.2"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "veal-core",
+]
+
+[[package]]
 name = "version-compare"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
