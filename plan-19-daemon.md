@@ -3,8 +3,45 @@
 Status: build order 1 (the gate) RUN 2026-11-07: passed, with the conditions
 below. Step 2 BUILT and checked 2026-11-07. Step 3 BUILT 2026-11-08, with two
 plan-15 checks left for a person (below). Step 4 BUILT 2026-11-08. Step 5 BUILT
-2026-11-09, with three checks left for a person (below). Step 6 broken into
-tasks 2026-11-09 (section "Step 6 tasks"). Steps 6–8 not started.
+2026-11-09, with three checks left for a person (below). Step 6 BUILT 2026-11-09,
+with the real-agent and tray-click checks left for a person (below). Steps 7–8
+not started.
+
+Results for 6: closing with agents running asks Keep running (default), Stop and
+quit, or Cancel, and `closeWithAgents` (Settings, or the dialog's "Don't ask
+again") skips the dialog. Keep running leaves the shells in the daemon, which shows
+a tray icon while no window is attached (tasks 6.1–6.5, one commit each, plus three
+fixes). `cargo test --workspace` 170 (+3 ignored): 50 app, 97 core, 12 daemon, 11
+daemon integration. `pnpm test` 240. Clippy has the same single warning. Installer
+5.02 MB, `veal-daemon.exe` 1.57 MB (was 1.35).
+
+Live, on the release build over CDP. The agent was a stand-in, `ping.exe` copied to
+`claude.exe`, which agent detection treats as `claude`:
+
+| Check | Result |
+|---|---|
+| Acceptance 6: close with idle shells | No dialog, no tray; app and daemon gone in 0.3 s |
+| Close with an agent, setting Ask | Dialog "Agents running", the agent listed, Keep running focused |
+| Keep running | App gone, daemon and agent kept (same PID); log `[tray] shown: Veal: 1 agent running` |
+| Reopen (what the tray's Open Veal launches) | Same daemon, agent PID unchanged, CLAUDE badge and sidebar dot at once, screen restored; `[tray] hidden` |
+| Stop and quit, "Don't ask again" ticked | Everything gone in 0.3 s; next close with an agent skipped the dialog and stopped all |
+| Setting Keep running in Settings | Close with an agent skipped the dialog and kept everything |
+| Acceptance 8: New terminal, then close at once | The new pane came back on reopen and ran a command |
+| Acceptance 9: that, 20 times | All 20 closes went through; every pane ran a command afterwards |
+
+Found while checking, all fixed: integration-test daemons put up tray icons (only
+the user's own pipe gets a tray now); in a workspace build Tauri switches on
+muda's `common-controls-v6`, and the daemon, with no manifest, failed to load
+(`0xC0000139`), so `cargo test --workspace` failed while `-p veal-daemon` passed
+(the daemon now embeds a Common Controls v6 manifest); the "Don't ask again"
+checkbox sat on its own line.
+
+Left for a person: acceptance 1 and 2 with a real `claude` on a long task (only the
+stand-in was used, so no prompt, paste or Ctrl+C into a reattached agent); clicking
+the tray icon itself (left click and Open Veal launch `veal.exe`; Stop everything
+asks with a message box when agents run); seeing the icon and its tooltip in the
+taskbar (only the log was checked); Explorer restarting while the icon shows (not
+handled: the icon would be gone until the next hide and show).
 
 Results for 5: shells live in `veal-daemon.exe`, behind a user-only named pipe, and
 the app is a client of it (tasks 5.1–5.11, one commit each). `cargo test --workspace`
@@ -1322,3 +1359,5 @@ Run on the release build, with a real `claude` session unless stated.
 - 2026-11-09: step 6 broken into tasks (section "Step 6 tasks"), with decisions
   E1–E6: a desktop connection means attached, the tray polls, Keep running is a
   flag on the bridge, and the setting only covers agents.
+- 2026-11-09: step 6 built and checked live on the release build. Results at the
+  top; real-agent and tray-click checks left for a person.
