@@ -17,7 +17,6 @@
 
 use crate::session::{Attached, ClientId, Notify, Session};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -85,15 +84,7 @@ pub struct Opened {
     pub agent: Option<String>,
 }
 
-/// One row of `list`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionInfo {
-    pub key: String,
-    pub cwd: String,
-    pub exited: bool,
-    pub code: Option<i32>,
-}
+pub use crate::protocol::SessionInfo;
 
 #[derive(Default)]
 pub struct PtyRegistry {
