@@ -352,6 +352,7 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     shell: Some(shell.into()),
+                    env_overlay: None,
                 },
                 move |id| {
                     let _ = tx.send(id);

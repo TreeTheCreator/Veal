@@ -85,6 +85,12 @@ impl From<veal_core::pty::Opened> for OpenedPane {
     }
 }
 
+/// A dev build passes its own environment on to panes, which otherwise get a
+/// fresh user environment and would lose the dev shell's variables (plan-19 5.3).
+fn dev_overlay() -> Option<Vec<(String, String)>> {
+    cfg!(debug_assertions).then(|| std::env::vars().collect())
+}
+
 /// Attach to the pane's session, or spawn it if there is none (plan-19).
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
@@ -114,7 +120,7 @@ fn pty_open(
         let _ = app.emit("pty-exit", PtyExit { id, code });
     };
     registry
-        .open(&key, SpawnOptions { cwd, cols, rows, shell }, env, on_data_ready, on_exit)
+        .open(&key, SpawnOptions { cwd, cols, rows, shell, env_overlay: dev_overlay() }, env, on_data_ready, on_exit)
         .map(OpenedPane::from)
 }
 
