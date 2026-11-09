@@ -131,6 +131,17 @@ fn on_path(program: &str) -> bool {
     })
 }
 
+/// Undo an inherited "ignore Ctrl+C" (plan-19). Windows passes that setting
+/// from parent to child, so a daemon started by a process that ignores Ctrl+C
+/// would hand it to every shell, and Ctrl+C would stop nothing in any pane.
+/// The daemon calls this once at start; the shells inherit the fix.
+pub fn allow_ctrl_c() {
+    #[cfg(windows)]
+    unsafe {
+        windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0);
+    }
+}
+
 /// Platform default shell. Windows: `pwsh.exe` if it is on PATH, else
 /// `powershell.exe`. Elsewhere: `$SHELL`, else `/bin/sh`.
 pub fn default_shell() -> String {

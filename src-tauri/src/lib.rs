@@ -1,3 +1,4 @@
+mod bridge;
 mod db;
 mod fs;
 mod tasks;
@@ -5,9 +6,9 @@ mod watch;
 
 use db::{Db, Project};
 use tasks::{Status, Task, TasksLock};
-use veal_core::pty::{DataReady, PtyRegistry, SessionInfo, SpawnOptions};
-use veal_core::session::ClientId;
-use veal_core::{agents, proxy};
+use bridge::{Bridge, OpenedPane};
+use veal_core::protocol::SessionInfo;
+use veal_core::proxy;
 use watch::Watchers;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -15,19 +16,6 @@ use std::sync::Arc;
 use tauri::ipc::Response;
 use tauri::webview::PageLoadEvent;
 use tauri::{Emitter, Manager, State, WindowEvent};
-
-#[derive(Clone, Serialize)]
-struct PtyExit {
-    id: u32,
-    code: Option<i32>,
-}
-
-/// The pane's queue went from empty to non-empty (plan-15): the frontend
-/// drains it with `pty_read` until empty.
-#[derive(Clone, Serialize)]
-struct PtyData {
-    id: u32,
-}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,35 +55,21 @@ fn proxy_resolve(proxy_mode: Option<String>, proxy_port: Option<String>, proxy_b
     ProxyPreview { resolved, env }
 }
 
-/// What a pane gets back from `pty_open`.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct OpenedPane {
-    id: u32,
-    client: ClientId,
-    exited: bool,
-    code: Option<i32>,
-    agent: Option<String>,
-}
-
-impl From<veal_core::pty::Opened> for OpenedPane {
-    fn from(o: veal_core::pty::Opened) -> Self {
-        OpenedPane { id: o.id, client: o.client, exited: o.exit.is_some(), code: o.exit.flatten(), agent: o.agent }
-    }
-}
-
 /// A dev build passes its own environment on to panes, which otherwise get a
 /// fresh user environment and would lose the dev shell's variables (plan-19 5.3).
 fn dev_overlay() -> Option<Vec<(String, String)>> {
     cfg!(debug_assertions).then(|| std::env::vars().collect())
 }
 
+// The shells live in `veal-daemon.exe` (plan-19 step 5). These commands keep
+// the shapes they had when the shells were in-process, and forward to it
+// through `bridge.rs`.
+
 /// Attach to the pane's session, or spawn it if there is none (plan-19).
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
-fn pty_open(
-    app: tauri::AppHandle,
-    registry: State<'_, Arc<PtyRegistry>>,
+async fn pty_open(
+    bridge: State<'_, Arc<Bridge>>,
     key: String,
     cwd: String,
     cols: u16,
@@ -105,75 +79,59 @@ fn pty_open(
     proxy_port: Option<String>,
     proxy_bypass: Option<String>,
 ) -> Result<OpenedPane, String> {
-    let ready_app = app.clone();
-    let on_data_ready: DataReady = Arc::new(move |id: u32| {
-        let _ = ready_app.emit("pty-data", PtyData { id });
-    });
-    // Only a spawn needs the proxy, and resolving it can block.
-    if let Some(opened) = registry.attach_key(&key, cols, rows, Arc::clone(&on_data_ready)) {
-        return Ok(opened.into());
-    }
-    let resolved = resolve_proxy(proxy_mode.as_deref(), proxy_port.as_deref());
-    let env = proxy::proxy_env(&resolved, proxy_bypass.as_deref());
-    let on_exit = move |id: u32, code: Option<i32>| {
-        let _ = app.emit("pty-exit", PtyExit { id, code });
-    };
-    registry
-        .open(&key, SpawnOptions { cwd, cols, rows, shell, env_overlay: dev_overlay() }, env, on_data_ready, on_exit)
-        .map(OpenedPane::from)
+    bridge.open(key, cwd, cols, rows, shell, proxy_mode, proxy_port, proxy_bypass, dev_overlay()).await
 }
 
 /// What is running, for boot to reconcile against the saved layout (plan-19).
 #[tauri::command(async)]
-fn pty_list(registry: State<'_, Arc<PtyRegistry>>) -> Vec<SessionInfo> {
-    registry.list()
+async fn pty_list(bridge: State<'_, Arc<Bridge>>) -> Result<Vec<SessionInfo>, String> {
+    bridge.list().await
 }
 
-/// The pane's terminal went away; its shell keeps running.
+/// The pane's terminal went away; its shell keeps running. `client` is the
+/// one `pty_open` returned, which the bridge already holds.
 #[tauri::command(async)]
-fn pty_detach(registry: State<'_, Arc<PtyRegistry>>, id: u32, client: ClientId) {
-    registry.detach(id, client);
+fn pty_detach(bridge: State<'_, Arc<Bridge>>, id: u32, client: u32) {
+    let _ = client;
+    bridge.detach(id);
 }
 
 /// Boot found an exited session it has nothing to show for.
 #[tauri::command(async)]
-fn pty_forget(registry: State<'_, Arc<PtyRegistry>>, key: String) {
-    registry.forget_key(&key);
+async fn pty_forget(bridge: State<'_, Arc<Bridge>>, key: String) -> Result<(), String> {
+    bridge.forget(key).await
 }
 
 /// Raw bytes reach JS as an ArrayBuffer over the ipc protocol; xterm decodes
 /// UTF-8 itself, so a take boundary inside a multibyte sequence is harmless.
 #[tauri::command(async)]
-fn pty_read(registry: State<'_, Arc<PtyRegistry>>, id: u32, client: ClientId) -> Response {
-    Response::new(registry.take_from(id, client))
+fn pty_read(bridge: State<'_, Arc<Bridge>>, id: u32, client: u32) -> Response {
+    let _ = client;
+    Response::new(bridge.read(id))
 }
 
 // Every command is `async` so it runs on the async runtime, not the main
-// thread (plan-16): one blocking call no longer stalls every other pane
-// and view. The two calls known to block for seconds — a write to a child
-// that has stopped reading, a Recycle-Bin delete of a big tree — also
-// leave the runtime's workers via `spawn_blocking`.
+// thread (plan-16). A write never blocks now: it is queued on the pipe, and
+// the daemon's per-session writer thread does the I/O (plan-19 D9).
 #[tauri::command(async)]
-async fn pty_write(registry: State<'_, Arc<PtyRegistry>>, id: u32, data: String) -> Result<(), String> {
-    let registry = Arc::clone(&registry);
-    tauri::async_runtime::spawn_blocking(move || registry.write(id, data.as_bytes()))
-        .await
-        .map_err(|e| e.to_string())?
+fn pty_write(bridge: State<'_, Arc<Bridge>>, id: u32, data: String) -> Result<(), String> {
+    bridge.write(id, data.as_bytes())
 }
 
 #[tauri::command(async)]
-fn pty_resize(
-    registry: State<'_, Arc<PtyRegistry>>,
-    id: u32,
-    cols: u16,
-    rows: u16,
-) -> Result<(), String> {
-    registry.resize(id, cols, rows)
+fn pty_resize(bridge: State<'_, Arc<Bridge>>, id: u32, cols: u16, rows: u16) -> Result<(), String> {
+    bridge.resize(id, cols, rows)
 }
 
 #[tauri::command(async)]
-fn pty_kill(registry: State<'_, Arc<PtyRegistry>>, key: String) -> Result<(), String> {
-    registry.kill_key(&key)
+async fn pty_kill(bridge: State<'_, Arc<Bridge>>, key: String) -> Result<(), String> {
+    bridge.kill(key).await
+}
+
+/// The terminal colours, for OSC 10/11 answers while no window is attached.
+#[tauri::command(async)]
+fn pty_theme(bridge: State<'_, Arc<Bridge>>, fg: (u8, u8, u8), bg: (u8, u8, u8)) {
+    bridge.theme(fg, bg);
 }
 
 // ---- persistence (src/db.rs) ----
@@ -391,7 +349,6 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(Arc::new(PtyRegistry::default()))
         .manage(TasksLock::default())
         .setup(|app| {
             veal_core::log::init("app");
@@ -408,11 +365,14 @@ pub fn run() {
                 watch_root(app.handle(), &watchers, &project);
             }
             app.manage(watchers);
-            // Agent detection: the process tree under each pane's shell,
-            // polled; a change reaches JS as `pty-agent` (plan-08).
-            let handle = app.handle().clone();
-            agents::start(Arc::clone(&*app.state::<Arc<PtyRegistry>>()), move |a| {
-                let _ = handle.emit("pty-agent", a);
+            // The shells live in the daemon. Connect now, so the first pane
+            // does not wait for a launch; commands share this connection.
+            let bridge = Arc::new(Bridge::new(app.handle().clone()));
+            app.manage(Arc::clone(&bridge));
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = bridge.client().await {
+                    veal_core::vlog!("[bridge] first connect: {e}");
+                }
             });
             Ok(())
         })
@@ -425,6 +385,7 @@ pub fn run() {
             pty_write,
             pty_resize,
             pty_kill,
+            pty_theme,
             proxy_resolve,
             projects_list,
             projects_add,
@@ -446,19 +407,21 @@ pub fn run() {
             tasks_remove,
         ])
         // A fresh page (F5, "Refresh", the dev loop's full reload) never ran the
-        // old page's React cleanup, so its clients are still attached. The
-        // shells stay: boot reattaches to them (plan-19).
+        // old page's React cleanup, so its panes are still attached. The shells
+        // stay: boot reattaches to them (plan-19).
         .on_page_load(|webview, payload| {
             if payload.event() == PageLoadEvent::Started {
-                webview.state::<Arc<PtyRegistry>>().detach_all();
+                webview.state::<Arc<Bridge>>().detach_all();
             }
         })
         .on_window_event(|window, event| {
-            // Kill every shell/agent once the window is really going, so
-            // nothing is orphaned. Not on CloseRequested: the close guard in
-            // JS (plan-06) can cancel that, and the panes must survive it.
+            // The window is really going. Not on CloseRequested: the close guard
+            // in JS (plan-06) can cancel that, and the panes must survive it.
+            // Until the tray exists (step 6), closing still ends every shell,
+            // now by asking the daemon to (plan-19 D4).
             if let WindowEvent::Destroyed = event {
-                window.state::<Arc<PtyRegistry>>().kill_all();
+                let bridge = Arc::clone(&*window.state::<Arc<Bridge>>());
+                tauri::async_runtime::block_on(bridge.shutdown());
             }
         })
         .run(tauri::generate_context!())

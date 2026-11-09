@@ -275,8 +275,7 @@ pub fn launch(exe: &Path, build: &str, pipe: &str) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED};
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, PROCESS_INFORMATION,
-        STARTUPINFOW,
+        CreateProcessW, CREATE_BREAKAWAY_FROM_JOB, DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
     };
     let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
     let quote = |s: &str| format!("\"{}\"", s.replace('"', ""));
@@ -312,7 +311,9 @@ pub fn launch(exe: &Path, build: &str, pipe: &str) -> io::Result<()> {
         }
         Ok(())
     };
-    let base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+    // Not CREATE_NEW_PROCESS_GROUP: it turns Ctrl+C off for the new process,
+    // its children inherit that, and Ctrl+C would stop nothing in any pane.
+    let base = DETACHED_PROCESS;
     match start(base | CREATE_BREAKAWAY_FROM_JOB) {
         Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
             vlog!("[client] job forbids breakaway; daemon starts inside it");

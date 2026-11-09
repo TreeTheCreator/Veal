@@ -10,6 +10,7 @@ use veal_daemon::{State, IDLE};
 fn main() {
     log::init("daemon");
     std::panic::set_hook(Box::new(|info| vlog!("[daemon] panic: {info}")));
+    veal_core::pty::allow_ctrl_c();
 
     // `--build <id>`: which binary this is, for the dev build check (plan-19 D6).
     // `--pipe <name>`: the app names the pipe it will connect to.
