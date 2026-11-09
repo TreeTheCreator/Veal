@@ -43,7 +43,9 @@ fn main() {
         }
     };
     let state = State::new(build);
-    if let Err(e) = rt.block_on(veal_daemon::run(state, &name, idle)) {
+    let tray_state = std::sync::Arc::clone(&state);
+    let on_listening = move || veal_daemon::tray::start(tray_state);
+    if let Err(e) = rt.block_on(veal_daemon::run(state, &name, idle, on_listening)) {
         vlog!("[daemon] stopped: {e}");
     }
 }

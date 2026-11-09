@@ -17,3 +17,8 @@ path = "src/main.rs"
 veal-core = { path = "../core" }
 serde_json = "1"
 tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "sync", "time", "macros"] }
+
+[target.'cfg(windows)'.dependencies]
+# The tray (plan-19 section 8). Both are in the lock already through Tauri.
+tray-icon = { version = "0.24", default-features = false }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
