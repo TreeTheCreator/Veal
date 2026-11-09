@@ -565,6 +565,17 @@ impl PtyRegistry {
         self.sessions.lock().unwrap().values().filter(|e| e.session.exit().is_none()).count()
     }
 
+    /// The detected agent of every session whose child is still running.
+    pub fn agents(&self) -> Vec<String> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|e| e.session.exit().is_none())
+            .filter_map(|e| e.agent.clone())
+            .collect()
+    }
+
     /// The colours OSC 10/11 report while no responder is attached, for every
     /// session now and every one started later.
     pub fn set_theme_all(&self, fg: (u8, u8, u8), bg: (u8, u8, u8)) {
@@ -1111,6 +1122,7 @@ mod tests {
         let id = open_key(&registry, "agented").expect("spawn").id;
         registry.note_agent(id, Some("claude".into()));
         assert_eq!(open_key(&registry, "agented").unwrap().agent.as_deref(), Some("claude"));
+        assert_eq!(registry.agents(), vec!["claude".to_string()]);
         registry.note_agent(id, None);
         assert_eq!(open_key(&registry, "agented").unwrap().agent, None);
         registry.kill_all();
