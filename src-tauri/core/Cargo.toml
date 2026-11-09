@@ -17,4 +17,4 @@ sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 [target.'cfg(windows)'.dependencies]
 # Already in the tree through Tauri. WinHttp and Foundation read the user's
 # proxy setting (plan-18).
-windows-sys = { version = "0.61", features = ["Win32_Networking_WinHttp", "Win32_Foundation"] }
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinHttp", "Win32_Foundation", "Win32_Security", "Win32_System_Environment", "Win32_System_Threading"] }

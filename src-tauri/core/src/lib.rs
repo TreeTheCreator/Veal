@@ -8,3 +8,4 @@ pub mod proxy;
 pub mod pty;
 pub mod session;
 pub mod sysproxy;
+pub mod userenv;

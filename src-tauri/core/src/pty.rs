@@ -48,6 +48,10 @@ pub struct SpawnOptions {
     pub rows: u16,
     /// Explicit shell/program. `None` picks the platform default.
     pub shell: Option<String>,
+    /// Set after the fresh user environment and before Veal's own variables.
+    /// A dev build sends its whole environment, so a dev shell's variables
+    /// still reach its panes (plan-19 5.3).
+    pub env_overlay: Option<Vec<(String, String)>>,
 }
 
 struct PtyHandle {
@@ -317,6 +321,21 @@ impl PtyRegistry {
 
         let mut cmd = CommandBuilder::new(&shell);
         cmd.cwd(&opts.cwd);
+        // A fresh environment, not this process's: a long-lived daemon would
+        // otherwise hand new panes the PATH from when it started.
+        match crate::userenv::fresh() {
+            Some(vars) => {
+                cmd.env_clear();
+                for (k, v) in vars {
+                    cmd.env(k, v);
+                }
+            }
+            None if cfg!(windows) => crate::vlog!("[pty] no fresh environment; inheriting"),
+            None => {}
+        }
+        for (k, v) in opts.env_overlay.iter().flatten() {
+            cmd.env(k, v);
+        }
         // Ignored by ConPTY; required on unix so the shell knows it has a real terminal.
         cmd.env("TERM", "xterm-256color");
         // Tells the `veal` launchers not to exit this shell after launching.
@@ -628,6 +647,7 @@ mod tests {
             cols: 80,
             rows: 24,
             shell: Some(echo_shell()),
+            env_overlay: None,
         }
     }
 
@@ -755,6 +775,7 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     shell: Some(echo_shell()),
+                    env_overlay: None,
                 },
                 move |id| {
                     let _ = ready_tx.send(id);
@@ -837,6 +858,7 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     shell: Some(echo_shell()),
+                    env_overlay: None,
                 },
                 |_| {},
                 |_, _| {},
@@ -861,6 +883,7 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     shell: Some(echo_shell()),
+                    env_overlay: None,
                 },
                 proxy_env(&resolved, None),
                 move |id| {
@@ -890,6 +913,50 @@ mod tests {
         registry.kill(id).ok();
     }
 
+    /// A fresh environment leaves this process's own variables out; the
+    /// overlay puts them back (plan-19 5.3).
+    #[cfg(windows)]
+    #[test]
+    fn spawn_env_is_fresh_plus_overlay() {
+        std::env::set_var("VEAL_PTY_ENV_TEST", "from-test-process");
+        let run = |overlay: Option<Vec<(String, String)>>| {
+            let registry = Arc::new(PtyRegistry::default());
+            let (ready_tx, ready_rx) = mpsc::channel::<u32>();
+            let id = registry
+                .spawn(
+                    SpawnOptions {
+                        cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+                        cols: 80,
+                        rows: 24,
+                        shell: Some(echo_shell()),
+                        env_overlay: overlay,
+                    },
+                    move |id| {
+                        let _ = ready_tx.send(id);
+                    },
+                    |_, _| {},
+                )
+                .expect("spawn");
+            let mut out = Vec::new();
+            read_until(&registry, id, &ready_rx, &mut out, Duration::from_secs(10), |b| {
+                b.windows(4).any(|w| w == b"\x1b[6n")
+            });
+            registry.write(id, b"\x1b[1;1R").unwrap();
+            read_until(&registry, id, &ready_rx, &mut out, Duration::from_secs(10), |b| b.contains(&b'>'));
+            registry.write(id, b"echo [%VEAL_PTY_ENV_TEST%] & set /a 6*7\r\n").unwrap();
+            // `42` is only in the output, never in the echoed input.
+            read_until(&registry, id, &ready_rx, &mut out, Duration::from_secs(10), |b| {
+                String::from_utf8_lossy(b).contains("42")
+            });
+            registry.kill(id).ok();
+            String::from_utf8_lossy(&out).into_owned()
+        };
+        let bare = run(None);
+        assert!(!bare.contains("from-test-process"), "{bare:?}");
+        let with = run(Some(vec![("VEAL_PTY_ENV_TEST".into(), "from-overlay".into())]));
+        assert!(with.contains("[from-overlay]"), "{with:?}");
+    }
+
     /// Plan-16: the footer reads `failed to start shell: X is not on PATH`.
     #[test]
     fn missing_shell_is_named_plainly() {
@@ -897,7 +964,7 @@ mod tests {
         let cwd = std::env::temp_dir().to_string_lossy().into_owned();
         let spawn = |shell: &str| {
             registry.spawn(
-                SpawnOptions { cwd: cwd.clone(), cols: 80, rows: 24, shell: Some(shell.into()) },
+                SpawnOptions { cwd: cwd.clone(), cols: 80, rows: 24, shell: Some(shell.into()), env_overlay: None },
                 |_| {},
                 |_, _| {},
             )
