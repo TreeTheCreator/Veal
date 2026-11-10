@@ -5,8 +5,8 @@ below. Step 2 BUILT and checked 2026-11-07. Step 3 BUILT 2026-11-08, with two
 plan-15 checks left for a person (below). Step 4 BUILT 2026-11-08. Step 5 BUILT
 2026-11-09, with three checks left for a person (below). Step 6 BUILT 2026-11-09,
 with the real-agent and tray-click checks left for a person (below). Step 7 BUILT
-2026-11-10, with a clean-machine check left for a person (below). Step 8 not
-started.
+2026-11-10, with a clean-machine check left for a person (below). Step 8 broken
+into tasks 2026-11-10 (section "Step 8 tasks"), not started.
 
 Results for 7: `pnpm bundle` makes an installer that carries `veal-daemon.exe`
 (F1). The installer and uninstaller stop the daemon after asking about Veal itself
@@ -1478,6 +1478,167 @@ installer and `latest.json` from `127.0.0.1:8765`.
 9. Write the results at the top of this file. Left for a person: SmartScreen
    and antivirus on a clean machine (known unknown).
 
+## Step 8 tasks
+
+The acceptance list below, run on one release candidate, then the version bump and
+the release. Most rows were checked on earlier builds in steps 5–7. Since steps 6
+and 7 changed closing and packaging, every row that can be scripted is run again
+on the candidate. The rows that need a person get exact steps. Nothing is published
+until the user says so.
+
+Where things stand: `claude/daemon-step-4` is 37 commits ahead of `origin/main`.
+The published release is v0.1.2, from 2026-10-16, with no daemon. The version is
+0.1.2 in five places: `package.json`, `tauri.conf.json`, and the `veal`,
+`veal-core` and `veal-daemon` crates.
+
+**Decisions this breakdown makes** (change them here if wrong):
+
+- **G1. The live-check scripts go into the repo,** in `scripts/acceptance/`:
+  `cdp.mjs`, `closewin.ps1`, `uia.ps1`, `old-session.mjs` and a stand-in agent
+  maker. They have been rebuilt in a scratch folder for each of steps 5–7. They
+  are tools for a person or a session to run, not part of `pnpm test`.
+- **G2. One candidate, every scriptable row.** Build once with `pnpm bundle` and
+  the test identity, and run rows 3–11, 13 and 15 against it. A row that fails
+  gets fixed, and the candidate is rebuilt and every row run again: a fix can
+  break a row that passed.
+- **G3. The version goes to 0.1.3 in all five places,** with a test that keeps
+  them equal. It also fixes 7.6's note: the daemon's build string comes from its
+  own crate version, so it now moves with the app's.
+- **G4. The upgrade from v0.1.2 is tested from v0.1.2's own source.** The tag's
+  code is built under the test identity at 0.1.89 and updated to the candidate at
+  0.1.92. That covers the path every current user takes (no daemon, to a daemon,
+  through the old app's updater and the new installer's hooks) without touching
+  the installed Veal. Re-running it with the published v0.1.2 binary would replace
+  the real install, so that is left to the user.
+- **G5. Release order:** PR to `main`, the user merges it, then `pnpm release`
+  runs from an up-to-date `main` checkout. Publishing and merging both wait for
+  the user.
+
+Order: 8.1 and 8.2 first, in either order. 8.3 needs both. 8.4 needs the
+candidate from 8.3. 8.5 can be done while 8.3 and 8.4 run. 8.6 comes last.
+
+### 8.1 Acceptance scripts (`scripts/acceptance/`)
+
+1. Move in the scratch tools, cleaned up and with a usage line each:
+   - `cdp.mjs <port> eval|type|enter|shot`
+   - `closewin.ps1` (WM_CLOSE to the window)
+   - `uia.ps1 list|click <pid> <name>` (NSIS dialogs through `BM_CLICK`)
+   - `old-session.mjs <pipe>` (a protocol-99 session)
+   - `fake-agent.ps1`, which copies `ping.exe` to `claude.exe` in a folder the
+     script is given
+2. Give `closewin.ps1` an optional exe path, so it closes the right `veal.exe`
+   when a test install and a dev build are both running.
+3. `scripts/acceptance/README.md`: the CDP launch variable
+   (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`), the test identity, the feed server
+   line, and that the scripts run against the user's own data unless the test
+   identity is used.
+
+Done when: each script runs once from its new place.
+
+### 8.2 Version 0.1.3 (G3)
+
+1. Set 0.1.3 in the five places, and refresh `Cargo.lock`.
+2. `src/version.test.ts`: reads the five files raw, as the payload test reads
+   `lib.rs`, and checks that they agree.
+3. Do not tag or publish (G5).
+
+Done when: tests pass and `cargo build` picks up the lock change.
+
+### 8.3 Release candidate and scripted acceptance (G2)
+
+Build the candidate with `pnpm bundle --config src-tauri/tauri.test.conf.json
+--config '{"version":"0.1.92"}'`, signed. Install it with `/S`, with the real Veal
+closed. Rows, numbered as in the acceptance list:
+
+1. **3.** F5 twice with the agent running: same PID, badge right, no junk typed
+   into it (its pane shows nothing new).
+2. **4.** End `veal.exe` in Task Manager (`Stop-Process`): agent and daemon live;
+   relaunch reattaches.
+3. **5.** End `veal-daemon.exe`: every pane shows "background service stopped";
+   Restart gives shells in the same cwd.
+4. **6.** Close with idle shells: no dialog, no tray, daemon gone.
+5. **7.** `exit` attached closes the pane. `exit` while detached (F5) is dropped
+   on relaunch. `exit 3` while detached shows `process exited (code 3)`.
+6. **8.** New terminal then close at once, with Keep running: the new pane works
+   on reopen.
+7. **9.** That, 20 times: no hang, every pane answers.
+8. **10.** plan-15's flood in four panes for 60 s: none stops, all answer after
+   Ctrl+C. Pause the page in the debugger mid-flood; the screen is right on
+   resume.
+9. **11.** `setx` a new `PATH` entry with a test tool in it (then remove it). A
+   new pane finds the tool with the same daemon PID.
+10. **13.** plan-18's A1 and A10, and the Settings row equals a new pane's
+    proxy variables.
+11. **15.** Four idle panes: daemon CPU under 1% over 60 s. Report private bytes
+    with 5000 lines each.
+12. Closing and tray, from step 6: Keep running leaves the agent running and the
+    tray icon up, shown in the log; reopening hides it; the saved `keep` and
+    `stop` settings skip the dialog.
+
+Each row gets a result line. A failure is fixed in its own commit, then the
+candidate is rebuilt and every row run again.
+
+Done when: every row passes on one candidate.
+
+### 8.4 Upgrade from v0.1.2 (G4)
+
+1. A temporary worktree at tag `v0.1.2`. Build it signed with the test identity
+   at version 0.1.89 (`tauri build` with the same `--config`; it has no daemon to
+   bundle). Remove the worktree afterwards.
+2. Serve the 8.3 candidate (0.1.92) as the feed. Install 0.1.89 with `/S`, pin a
+   project, and open two panes. Its `veal.db` gets a pre-step-4 layout.
+3. Update from inside 0.1.89, with a long-running command in a pane. Its card
+   warns as v0.1.2 did. The installer runs passively, and the hooks find no
+   daemon and ask nothing.
+4. 0.1.92 starts. The two panes come back from the old layout with new session
+   keys (`parseNode`), in their saved folders, and a daemon starts from the
+   install folder.
+5. Close with Keep running, then reopen: it still works on data that started on
+   0.1.89.
+6. Uninstall, and clean up as in 7.6.
+
+Done when: every step passes.
+
+### 8.5 Checks for a person (`plan-19-checks.md`)
+
+A one-page checklist with exact steps and a box for the result, so it can be done
+without reading this plan:
+
+1. **Acceptance 1 and 2:** a real `claude` on a long task. Close with Keep
+   running, check the tray tooltip, reopen from the tray after 5 minutes: same
+   screen, badge right, the work went on. Then a prompt, Shift+Enter, a text
+   paste, an image paste, and Ctrl+C.
+2. **The tray:** left click opens Veal; Open Veal; Stop everything asks with an
+   agent running and not without; the icon and tooltip look right.
+3. **Acceptance 14:** from a second local Windows account, opening
+   `\\.\pipe\veal-<first user's SID>` fails. It includes a one-line PowerShell
+   for the attempt.
+4. **Acceptance 16:** sleep with an agent running, wake, and type into it.
+5. **Carried over:** launching from VS Code's terminal and closing it; watching
+   for a console flash in 10 spawns; three `claude` panes for 20 minutes
+   (plan-15 A4); mouse-wheel scrolling in a `claude` pane (A5).
+6. **Clean machine:** install the candidate on a PC or VM that has never had
+   Veal, with Defender on. Note any SmartScreen prompt and whether
+   `veal-daemon.exe` is flagged or slowed.
+7. **Optional:** update the installed v0.1.2 to the candidate for real (G4's
+   caveat).
+
+Done when: the file exists. Its results come back from the user.
+
+### 8.6 Release (G5)
+
+1. Write the results at the top of this file, and fold the user's checklist
+   results in.
+2. Open a PR from `claude/daemon-step-4` to `main`, with a summary of steps 2–8
+   and the checklist results. Do not merge it.
+3. After the user merges it: from an up-to-date `main`, run
+   `pnpm release --notes "…"` with notes written from the step results. Only on
+   the user's go-ahead, since it publishes v0.1.3 to everyone on the updater.
+4. After publishing: the installed Veal updates itself from v0.1.2. Check that
+   its first launch starts a daemon and keeps the layout.
+
+Done when: v0.1.3 is published and the installed Veal is on it.
+
 ## Tests
 
 Rust:
@@ -1605,3 +1766,7 @@ Run on the release build, with a real `claude` session unless stated.
   bundle-only config (F1), since `tauri-build` copies it on every cargo build.
 - 2026-11-10: step 7 built and checked live under the test identity. Results at
   the top; the clean-machine check left for a person.
+- 2026-11-10: step 8 broken into tasks (section "Step 8 tasks"): the scripts into
+  the repo, version 0.1.3 everywhere, one candidate for every scriptable row, the
+  upgrade from v0.1.2 built from its tag, a checklist for a person, then a PR and
+  the release on the user's word.
