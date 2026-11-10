@@ -36,6 +36,8 @@ $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"
 | `cdp.mjs <port> eval <expr>` | Evaluates in the page, prints JSON |
 | `cdp.mjs <port> type <pane> <text>` | Types into pane N (`\r` is not Enter; use `enter`) |
 | `cdp.mjs <port> enter <pane>` | Presses Enter in pane N |
+| `cdp.mjs <port> ctrlc <pane>` | Sends Ctrl+C to pane N |
+| `cdp.mjs <port> pause <seconds>` | Freezes the page in the debugger for that long |
 | `cdp.mjs <port> shot <file>` | Screenshot as PNG |
 | `closewin.ps1 [exe-path]` | WM_CLOSE to Veal's window, as the X does; the path picks one `veal.exe` |
 | `uia.ps1 list <pid>` | Named elements in a process's windows (NSIS, message boxes) |
