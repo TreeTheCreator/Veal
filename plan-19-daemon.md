@@ -32,8 +32,11 @@ went in, the candidate was rebuilt, and every row ran again on the rebuild:
 | 13. Proxy (Veee on) | New pane `https_proxy=http://127.0.0.1:15236`, `curl.exe -I https://api.anthropic.com` answered through it (HTTP 404 at the root), Settings row "Follow system · http://127.0.0.1:15236" |
 | 15. Idle cost | Four idle panes with 5000 lines each: daemon 0.44–0.78% of one core over 60 s; private 46.7–47.2 MB daemon, 8.7–9.5 MB `veal.exe` (WebView2 ~433 MB) |
 
-Row 11 (a new PATH entry) was not run: changing the user PATH was refused to the
-session, so it is in `plan-19-checks.md`. Rows 1, 2, 14 and 16 are there too.
+Row 11, run separately with the user's go-ahead: the user `Path` was saved, a
+folder holding `vealtool.cmd` was added, and `WM_SETTINGCHANGE` was broadcast. A
+pane opened before the change could not find it. A new pane ran it and `where`
+found it, with the same daemon PID. The `Path` was then restored byte for byte
+(still `REG_EXPAND_SZ`). Rows 1, 2, 14 and 16 are in `plan-19-checks.md`.
 
 Found and fixed: after the daemon was ended and Restart pressed, the pane kept its
 old shell's `claude` badge and sidebar dot. `onAgent` reported only a running
