@@ -1074,8 +1074,9 @@ starts it. Editing a daemon file and restarting dev picks up the new daemon
 ### 5.12 Live checks
 
 Build with `node scripts/build-daemon.mjs --release` and then
-`pnpm tauri build`, so both exes sit in `target\release`. Run `veal.exe` from
-there. Use step 4's CDP scripts (`Page.reload`) where a check is scripted.
+`pnpm tauri build`, so both exes sit in `target\release` (from step 7 on,
+`pnpm bundle` does both, and its installer carries the daemon). Run `veal.exe`
+from there. Use step 4's CDP scripts (`Page.reload`) where a check is scripted.
 
 1. Step 4's live table, every row. The "close the app" row now means the daemon
    exits too (D4).
