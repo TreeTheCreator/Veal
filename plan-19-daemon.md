@@ -4,8 +4,48 @@ Status: build order 1 (the gate) RUN 2026-11-07: passed, with the conditions
 below. Step 2 BUILT and checked 2026-11-07. Step 3 BUILT 2026-11-08, with two
 plan-15 checks left for a person (below). Step 4 BUILT 2026-11-08. Step 5 BUILT
 2026-11-09, with three checks left for a person (below). Step 6 BUILT 2026-11-09,
-with the real-agent and tray-click checks left for a person (below). Step 7
-broken into tasks 2026-11-09 (section "Step 7 tasks"). Steps 7–8 not started.
+with the real-agent and tray-click checks left for a person (below). Step 7 BUILT
+2026-11-10, with a clean-machine check left for a person (below). Step 8 not
+started.
+
+Results for 7: `pnpm bundle` makes an installer that carries `veal-daemon.exe`
+(F1). The installer and uninstaller stop the daemon after asking about Veal itself
+(F2–F4). An update stops it before installing, and a daemon of another protocol
+gets a Restart/Quit prompt instead of pane errors (tasks 7.1–7.5, plus one fix).
+`cargo test --workspace` 172 (+3 ignored): 50 app, 97 core, 12 daemon, 13 daemon
+integration (new: `--stop`, mismatch then replace). `pnpm test` 244. Clippy has the
+same single warning. Installer 5.48 MB with the daemon (was 5.02 without it).
+`release.mjs --dry-run` signs it and passes its new check.
+
+Live, under the test identity (F5), with installers 0.1.90 and 0.1.91 signed with
+the real key and served from `127.0.0.1:8765`. Installer dialogs were driven
+through UI Automation (`BM_CLICK`), the app over CDP, and the agent was the
+`claude.exe` stand-in from step 6:
+
+| Check | Result |
+|---|---|
+| 1. Install 0.1.90 (`/S`) | Folder has `veal.exe` and `veal-daemon.exe`; the daemon runs from it; a pane runs a command |
+| 2. Acceptance 12, update with an agent running | Card: "Updating stops Veal's background service: 1 running agent will end." Update anyway: daemon and agent gone within 2 s, installer ran with no prompt, 0.1.91 relaunched with a new daemon (16236, was 18540) |
+| 3. Manual install over a running app with an agent | "Veal Test is running!" first. Cancel aborted, with the agent, daemon and app untouched. Again with OK: `veal.exe` ended, daemon kept, then "Installing ends every shell…"; OK stopped it through `--stop` (log `[stop] … Stopped`) and the install completed |
+| 4. Manual install with only the daemon (Keep running) | Straight to the shells prompt; OK stopped daemon and agent; install completed |
+| 5. Acceptance 12, uninstall with the daemon running | "Uninstalling ends every shell…"; OK: no `veal-daemon.exe` or `veal.exe` left, the install folder gone |
+| 6. Mismatch (debug, a `--protocol 99` daemon with one session) | Prompt "1 session is running on an older version…"; Restart ended it and the panes run on a new daemon |
+| 7. `release.mjs --dry-run` | Signed, and `installer.nsi` names `veal-daemon.exe` |
+
+Found while checking, fixed: the mismatch prompt's Restart lost focus to a pane that
+mounted at the same moment, and the pane error said "1 sessions are".
+
+Notes: the daemon reports its build as `release-0.1.2`, the daemon crate's version,
+not the app's, so an update's daemon has the same build string; only the PID tells
+them apart in the log. 7.5's modal has no component test: the project has no DOM test
+setup, so the commands it calls are tested against `lib.rs` instead. 7.3 and 7.5
+share a commit for the daemon and client, and 7.4 and 7.5 one for the app commands,
+since they change the same lines. After a Rust edit in `tauri dev`, the daemon
+went down with the old app, since this sandboxed shell's job forbids breakaway (as
+in step 5); from a normal terminal it would survive.
+
+Left for a person: SmartScreen and antivirus on a clean machine (known unknown); the
+installer's look (only its text was read).
 
 Results for 6: closing with agents running asks Keep running (default), Stop and
 quit, or Cancel, and `closeWithAgents` (Settings, or the dialog's "Don't ask
@@ -1563,3 +1603,5 @@ Run on the release build, with a real `claude` session unless stated.
 - 2026-11-09: step 7 broken into tasks (section "Step 7 tasks"). Tauri's NSIS
   hooks and sidecar naming checked against 2.11.4; `externalBin` moved to a
   bundle-only config (F1), since `tauri-build` copies it on every cargo build.
+- 2026-11-10: step 7 built and checked live under the test identity. Results at
+  the top; the clean-machine check left for a person.
