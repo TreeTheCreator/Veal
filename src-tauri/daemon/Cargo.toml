@@ -1,6 +1,6 @@
 [package]
 name = "veal-daemon"
-version = "0.1.2"
+version = "0.1.3"
 description = "Veal's background service: owns every shell so agents outlive the window (plan-19)"
 authors = ["Triyan"]
 edition = "2021"

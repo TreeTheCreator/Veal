@@ -1,6 +1,6 @@
 [package]
 name = "veal-core"
-version = "0.1.2"
+version = "0.1.3"
 description = "Veal's shells, agent detection and proxy resolution, with no Tauri (plan-19)"
 authors = ["Triyan"]
 edition = "2021"
