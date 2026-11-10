@@ -81,7 +81,22 @@ Result: [            ]
    conversation, the mouse wheel scrolls its history smoothly.
    Result: [            ]
 
-## 6. A clean PC
+## 6. A new PATH entry reaches new panes (acceptance 11)
+
+A session can't change your PATH, so this one is yours. With Veal open:
+
+1. In Task Manager (Details), note the PID of `veal-daemon.exe`.
+2. Install any small tool that adds itself to PATH. Or add a folder to your
+   user PATH yourself: Start, "Edit environment variables for your account",
+   Path, New.
+3. Open a new pane in Veal. Without restarting anything, run `where <tool>`
+   (or `$env:Path`). The new entry is there, and `veal-daemon.exe` has the same
+   PID as in step 1.
+4. Remove the entry again if you added it only for this.
+
+Result: [            ]
+
+## 7. A clean PC
 
 On a PC or VM that has never had Veal, with Defender on:
 
@@ -92,7 +107,7 @@ On a PC or VM that has never had Veal, with Defender on:
 
 Result: [            ]
 
-## 7. Optional: the real update
+## 8. Optional: the real update
 
 This replaces your installed Veal. Update the installed v0.1.2 to the new
 version from its own update card. Afterwards your pinned projects and panes
