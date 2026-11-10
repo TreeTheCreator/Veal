@@ -238,7 +238,18 @@ describe("reattaching (plan-19)", () => {
     const s = await pending;
     const got: unknown[] = [];
     s.onAgent((a) => got.push(a));
-    expect(got).toEqual([]);
+    expect(got).toEqual([null]);
+  });
+
+  it("reports no agent to a pane restarted after the daemon was lost", async () => {
+    invoke.mockImplementation(async (cmd) => (cmd === "pty_open" ? opened(602, { agent: "claude" }) : cmd === "pty_read" ? empty() : undefined));
+    await spawn();
+    fire("pty-daemon-lost", null);
+    invoke.mockImplementation(async (cmd) => (cmd === "pty_open" ? opened(602) : cmd === "pty_read" ? empty() : undefined));
+    const s = await spawn();
+    const got: unknown[] = [];
+    s.onAgent((a) => got.push(a));
+    expect(got).toEqual([null]);
   });
 
   it("delivers a tombstone's code once", async () => {
@@ -308,6 +319,7 @@ describe("the background service stopping (plan-19 5.10)", () => {
     const agents: unknown[] = [];
     s.onExit((c) => exits.push(c));
     s.onAgent((x) => agents.push(x));
+    agents.length = 0;
     const before = reads();
     fire("pty-daemon-lost", null);
     // The new daemon numbers from 1 again: an old id's handlers must be gone.

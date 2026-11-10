@@ -350,10 +350,11 @@ export async function openPty(opts: OpenOptions, onData: OnData): Promise<PtySes
       let set = agentHandlers.get(id);
       if (!set) agentHandlers.set(id, (set = new Set()));
       set.add(cb);
-      // Attaching to a shell whose agent is already running: the poller only
-      // reports changes, so this is the only time this page hears about it.
-      const current = latestAgents.has(id) ? latestAgents.get(id)! : opened.agent;
-      if (current !== null) cb(current);
+      // The poller only reports changes, so this is the only time this page
+      // hears about an agent that is already running. Null is reported too: a
+      // pane restarted after the daemon was lost (plan-19 8.3) still carries
+      // its old shell's agent in the layout until something says otherwise.
+      cb(latestAgents.has(id) ? latestAgents.get(id)! : opened.agent);
       return () => {
         agentHandlers.get(id)?.delete(cb);
         if (agentHandlers.get(id)?.size === 0) agentHandlers.delete(id);
