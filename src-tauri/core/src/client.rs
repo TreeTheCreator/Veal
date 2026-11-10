@@ -235,7 +235,8 @@ impl std::fmt::Display for StartError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StartError::Mismatch { sessions } => {
-                write!(f, "{sessions} sessions are running on an older background service")
+                let are = if *sessions == 1 { "session is" } else { "sessions are" };
+                write!(f, "{sessions} {are} running on an older background service")
             }
             StartError::Io(e) => write!(f, "background service: {e}"),
         }

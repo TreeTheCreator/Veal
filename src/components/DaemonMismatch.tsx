@@ -3,7 +3,7 @@
 // this means something went wrong. Restart ends those sessions and starts this
 // version's service; Quit leaves them alone.
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { daemonMismatch, onDaemonMismatch, replaceDaemon } from "../pty";
 import { flushAll } from "./CloseGuard";
 
@@ -15,6 +15,7 @@ export function DaemonMismatch({ reload = () => location.reload() }: { reload?: 
   const [sessions, setSessions] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const restartRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     daemonMismatch()
@@ -25,6 +26,14 @@ export function DaemonMismatch({ reload = () => location.reload() }: { reload?: 
       off.then((f) => f()).catch(() => {});
     };
   }, []);
+
+  // The panes mount and take focus in the same moment the first connect
+  // fails, so `autoFocus` alone loses to xterm: focus once they have.
+  useEffect(() => {
+    if (sessions === null) return;
+    const t = setTimeout(() => restartRef.current?.focus(), 300);
+    return () => clearTimeout(t);
+  }, [sessions]);
 
   if (sessions === null) return null;
 
@@ -61,7 +70,7 @@ export function DaemonMismatch({ reload = () => location.reload() }: { reload?: 
           <button type="button" className="btn ghost" onClick={quit} disabled={busy}>
             Quit
           </button>
-          <button type="button" className="btn primary" onClick={restart} disabled={busy} autoFocus>
+          <button type="button" className="btn primary" onClick={restart} disabled={busy} autoFocus ref={restartRef}>
             {busy ? "Restarting…" : "Restart"}
           </button>
         </div>
