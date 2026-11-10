@@ -43,4 +43,5 @@ $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"
 | `uia.ps1 list <pid>` | Named elements in a process's windows (NSIS, message boxes) |
 | `uia.ps1 click <pid> <name>` | Clicks a button by name with `BM_CLICK` |
 | `old-session.mjs <pipe>` | Starts a session speaking protocol 99, as an older Veal would |
+| `rows.ps1 -Project <folder> [-Rows 3,4,...]` | Runs every scriptable row against the installed test build, one result line each (call it with `&`, not `-File`, to pass `-Rows`) |
 | `fake-agent.ps1 <dir>` | Makes `<dir>\claude.exe` (a copy of `ping.exe`); `claude.exe -t 127.0.0.1` runs until killed and counts as an agent |
