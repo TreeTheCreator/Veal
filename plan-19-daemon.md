@@ -5,8 +5,56 @@ below. Step 2 BUILT and checked 2026-11-07. Step 3 BUILT 2026-11-08, with two
 plan-15 checks left for a person (below). Step 4 BUILT 2026-11-08. Step 5 BUILT
 2026-11-09, with three checks left for a person (below). Step 6 BUILT 2026-11-09,
 with the real-agent and tray-click checks left for a person (below). Step 7 BUILT
-2026-11-10, with a clean-machine check left for a person (below). Step 8 broken
-into tasks 2026-11-10 (section "Step 8 tasks"), not started.
+2026-11-10, with a clean-machine check left for a person (below). Step 8: tasks
+8.1–8.5 DONE 2026-11-10. 8.6 waits on the person checks in `plan-19-checks.md`,
+the PR review, and the user's word to release.
+
+Results for 8: the acceptance tools are in `scripts/acceptance/`, now including
+`rows.ps1`, which runs every scriptable row against the installed test build (8.1).
+The version is 0.1.3 in all five places, and `src/version.test.ts` keeps them equal
+(8.2). `cargo test --workspace` 172 (+3 ignored), `pnpm test` 246.
+
+8.3, on candidate 0.1.92 (test identity, signed, installed with `/S`, the
+`claude.exe` stand-in for the agent). The first candidate failed row 5. The fix
+went in, the candidate was rebuilt, and every row ran again on the rebuild:
+
+| Row | Result on the rebuilt candidate |
+|---|---|
+| 3. F5 twice with an agent | Same agent PID and daemon, badge `claude`, nothing typed into it |
+| 4. End `veal.exe` | Agent and daemon lived; the relaunch reattached to the same daemon, badge `claude` |
+| 5. End `veal-daemon.exe` | "background service stopped"; Restart gave a new daemon, a shell in the same cwd, and the badge back to `shell` |
+| 6. Close with idle shells | No dialog, no tray; app and daemon gone in 0.7–0.8 s, also with four panes of 5000 lines (6b) |
+| 7. `exit` | Attached: the pane closes. While the app was ended: dropped on relaunch. `exit 3` the same way: `process exited (code 3)` |
+| 8. New terminal, close at once, Keep running | The new pane answered on reopen; same daemon, agent kept |
+| 9. That, 20 times | 20/20 closed and answered, one daemon throughout, agent kept |
+| 10. Flood, four panes, 60 s | About 2,800 lines/s per pane, none stopped (e.g. 56k/110k/164k lines at 20/40/60 s); all answered after Ctrl+C. Page frozen in the debugger for 30 s: the child finished 60,000 lines in ~14 s, and on resume the screen ended `line 60000`, `END-MARK`, prompt |
+| 12. Closing and tray | Ask: dialog names the agent, Keep running has focus; Keep: agent kept, tray "Veal: 1 agent running", hidden on reopen. Saved Stop: no dialog, all gone in 1.7 s. Saved Keep: no dialog (rows 8–9) |
+| 13. Proxy (Veee on) | New pane `https_proxy=http://127.0.0.1:15236`, `curl.exe -I https://api.anthropic.com` answered through it (HTTP 404 at the root), Settings row "Follow system · http://127.0.0.1:15236" |
+| 15. Idle cost | Four idle panes with 5000 lines each: daemon 0.44–0.78% of one core over 60 s; private 46.7–47.2 MB daemon, 8.7–9.5 MB `veal.exe` (WebView2 ~433 MB) |
+
+Row 11 (a new PATH entry) was not run: changing the user PATH was refused to the
+session, so it is in `plan-19-checks.md`. Rows 1, 2, 14 and 16 are there too.
+
+Found and fixed: after the daemon was ended and Restart pressed, the pane kept its
+old shell's `claude` badge and sidebar dot. `onAgent` reported only a running
+agent on attach, so nothing cleared the layout's entry. It now reports null too
+(a97c2b4, with a test).
+
+8.4, upgrade from v0.1.2: the `v0.1.2` tag built under the test identity as 0.1.89
+(no daemon), with a project pinned and two panes, one counting. Its card offered
+0.1.92 from the local feed. Restart to update ran the installer with
+`/P /UPDATE` and no prompt, and 0.1.92 was running with a daemon from the install
+folder about 7 s after the click. Both panes came back from the old layout with new
+session keys, in their saved folder. The counting shell had ended with the old app,
+as v0.1.2's shells do. Close with Keep running (agent in a pane), then reopen: both
+panes back on the same daemon, and they answer. Uninstall left no process or folder.
+
+Notes: the daemon's build string is now `release-0.1.3`. The test build's logs
+go to `%LOCALAPPDATA%\com.veal.app\logs`, the same folder as the real Veal's,
+because `core/src/log.rs` names it directly. The rest of the test identity is
+separate. A window close was once seen not to happen (the app was still open when
+the installer later ended it). That was after a manual debugger pause, and it did
+not happen again in three full runs.
 
 Results for 7: `pnpm bundle` makes an installer that carries `veal-daemon.exe`
 (F1). The installer and uninstaller stop the daemon after asking about Veal itself
@@ -1770,3 +1818,7 @@ Run on the release build, with a real `claude` session unless stated.
   the repo, version 0.1.3 everywhere, one candidate for every scriptable row, the
   upgrade from v0.1.2 built from its tag, a checklist for a person, then a PR and
   the release on the user's word.
+- 2026-11-10: step 8 tasks 8.1–8.5 done. Every scriptable row passes on a rebuilt
+  0.1.92 candidate after one fix (the stale agent badge after Restart), the upgrade
+  from v0.1.2's code works, and `plan-19-checks.md` holds the checks for a person,
+  now including row 11. Results at the top.
