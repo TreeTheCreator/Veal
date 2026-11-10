@@ -79,6 +79,9 @@ pub struct State {
     desktops: Mutex<HashSet<u64>>,
     next_conn: AtomicU64,
     build: String,
+    /// The protocol this daemon speaks: `PROTOCOL`, except in a test that
+    /// needs a daemon of another version (plan-19 7.5).
+    protocol: u32,
     /// When the daemon last had a connection or a live session.
     busy_at: Mutex<Instant>,
     /// Exits the process; a test swaps it out.
@@ -87,16 +90,27 @@ pub struct State {
 
 impl State {
     pub fn new(build: String) -> Arc<State> {
-        Self::with_exit(build, Box::new(|| std::process::exit(0)))
+        Self::with_protocol(build, PROTOCOL)
+    }
+
+    /// A daemon that answers `hello` with another protocol number, so tests can
+    /// make a version mismatch.
+    pub fn with_protocol(build: String, protocol: u32) -> Arc<State> {
+        Self::make(build, protocol, Box::new(|| std::process::exit(0)))
     }
 
     pub fn with_exit(build: String, exit: Box<dyn Fn() + Send + Sync>) -> Arc<State> {
+        Self::make(build, PROTOCOL, exit)
+    }
+
+    fn make(build: String, protocol: u32, exit: Box<dyn Fn() + Send + Sync>) -> Arc<State> {
         Arc::new(State {
             registry: Arc::new(PtyRegistry::default()),
             conns: Mutex::new(HashMap::new()),
             desktops: Mutex::new(HashSet::new()),
             next_conn: AtomicU64::new(1),
             build,
+            protocol,
             busy_at: Mutex::new(Instant::now()),
             exit,
         })
@@ -226,10 +240,10 @@ where
                             break 'read;
                         };
                         hello = true;
-                        matched = *theirs == PROTOCOL;
+                        matched = *theirs == state.protocol;
                         vlog!("[daemon] conn {conn}: hello {role} protocol {theirs} build {build}");
                         let body = ReplyBody::Hello {
-                            protocol: PROTOCOL,
+                            protocol: state.protocol,
                             build: state.build.clone(),
                             sessions: state.registry.live_count(),
                         };

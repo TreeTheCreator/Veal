@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::ClientOptions;
-use veal_core::client::{connect_or_launch, Client, Sink};
+use veal_core::client::{connect_or_launch, replace, Client, Sink, StartError};
 use veal_core::protocol::{ClientMsg, DaemonMsg, Frame, ReplyBody, Request, PROTOCOL};
 
 #[derive(Default)]
@@ -311,6 +311,92 @@ async fn shutdown_ends_the_shells_and_the_daemon() {
     opened(c.request(spawn_msg("y")).await);
     c.shutdown(Duration::from_secs(3)).await;
     assert!(pipe_gone(&name, 3).await, "daemon still serving");
+}
+
+/// `veal-daemon.exe --stop --pipe <name>`, as the installer runs it.
+async fn run_stop(name: &str) -> i32 {
+    let name = name.to_string();
+    tokio::task::spawn_blocking(move || {
+        std::process::Command::new(exe())
+            .args(["--stop", "--pipe", &name])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .code()
+            .unwrap_or(-1)
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_flag_ends_a_running_daemon_and_its_shells() {
+    let name = unique("stop");
+    let _cleanup = Cleanup(name.clone());
+    let (c, _) = start(&name).await;
+    opened(c.request(spawn_msg("x")).await);
+    assert_eq!(run_stop(&name).await, 0, "stopped");
+    assert!(pipe_gone(&name, 3).await, "daemon still serving");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !c.is_closed() {
+        assert!(Instant::now() < deadline, "the app's connection did not see it go");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(run_stop(&name).await, 1, "nothing left to stop");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_of_another_version_is_reported_then_replaced() {
+    let name = unique("mismatch");
+    let _cleanup = Cleanup(name.clone());
+    let mut old = std::process::Command::new(exe())
+        .args(["--pipe", &name, "--protocol", "99", "--build", "old"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    // Speak protocol 99 by hand, as an older app would, and start a session.
+    let mut raw = None;
+    for _ in 0..40 {
+        if let Ok(p) = ClientOptions::new().open(&name) {
+            raw = Some(p);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let mut raw = raw.expect("old daemon listening");
+    let hello = ClientMsg::Hello { protocol: 99, build: "old".into(), role: "desktop".into() };
+    raw.write_all(&Frame::control(&Request { id: 1, msg: hello }).encode()).await.unwrap();
+    raw.write_all(&Frame::control(&Request { id: 2, msg: spawn_msg("old") }).encode()).await.unwrap();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut seen = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !String::from_utf8_lossy(&seen).contains("\"id\":2") {
+        assert!(Instant::now() < deadline, "no spawn reply from the old daemon");
+        let n = tokio::time::timeout(Duration::from_secs(10), raw.read(&mut buf)).await.unwrap().unwrap();
+        seen.extend_from_slice(&buf[..n]);
+    }
+    drop(raw);
+
+    let screen = Arc::new(Screen::default());
+    let sink = || Arc::clone(&screen) as Arc<dyn Sink>;
+    match connect_or_launch(&name, &exe(), "test", false, sink()).await {
+        Err(StartError::Mismatch { sessions }) => assert_eq!(sessions, 1),
+        Ok(_) => panic!("connected to a daemon of another protocol"),
+        Err(e) => panic!("{e}"),
+    }
+
+    let c = replace(&name, &exe(), "test", false, sink()).await.expect("replaced");
+    assert_eq!(c.daemon.protocol, PROTOCOL);
+    assert!(old.wait().unwrap().success(), "the old daemon exited cleanly");
+    match c.request(ClientMsg::List).await {
+        Ok(ReplyBody::List { sessions }) => assert!(sessions.is_empty(), "{sessions:?}"),
+        other => panic!("{other:?}"),
+    }
+    c.shutdown(Duration::from_secs(3)).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

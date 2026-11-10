@@ -22,6 +22,16 @@ pub trait Sink: Send + Sync + 'static {
     fn disconnected(&self);
 }
 
+/// A sink for a connection that only sends control messages.
+pub struct NullSink;
+
+impl Sink for NullSink {
+    fn output(&self, _: u32, _: Vec<u8>) {}
+    fn snapshot(&self, _: u32, _: Vec<u8>) {}
+    fn event(&self, _: DaemonMsg) {}
+    fn disconnected(&self) {}
+}
+
 type Pending = HashMap<u64, oneshot::Sender<Result<ReplyBody, String>>>;
 
 /// What the daemon said in reply to `hello`.
@@ -370,7 +380,7 @@ pub async fn connect_or_launch(
         }
         vlog!("[client] replacing idle daemon build {} with {build}", d.build);
         client.shutdown(Duration::from_secs(3)).await;
-        wait_gone(name).await;
+        let _ = wait_gone(name).await;
     }
     Err(StartError::Io(io::Error::other("daemon would not start")))
 }
@@ -387,16 +397,64 @@ async fn wait_connect(name: &str, role: &str, build: &str, sink: &Arc<dyn Sink>)
     }
 }
 
-/// Until nothing serves `name`, for up to 3 s.
+/// Until nothing serves `name`, for up to 3 s. Whether it went.
 #[cfg(windows)]
-async fn wait_gone(name: &str) {
+pub async fn wait_gone(name: &str) -> bool {
     use tokio::net::windows::named_pipe::ClientOptions;
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
         match ClientOptions::new().open(name) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return true,
             _ => tokio::time::sleep(Duration::from_millis(50)).await,
         }
+    }
+    false
+}
+
+/// Stop a daemon of another version, ending its sessions, then connect to a
+/// new one: the version-mismatch prompt's Restart (plan-19 7.5). `shutdown` is
+/// one of the two messages a mismatched client may send.
+#[cfg(windows)]
+pub async fn replace(
+    name: &str,
+    exe: &Path,
+    build: &str,
+    debug: bool,
+    sink: Arc<dyn Sink>,
+) -> Result<Client, StartError> {
+    if stop(name).await == Stopped::StillRunning {
+        return Err(StartError::Io(io::Error::other("the old background service would not stop")));
+    }
+    connect_or_launch(name, exe, build, debug, sink).await
+}
+
+/// What `stop` found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stopped {
+    NotRunning,
+    Stopped,
+    StillRunning,
+}
+
+/// End the daemon on `name` and every shell in it, for the installer
+/// (plan-19 7.3). `shutdown` is accepted from a client of any protocol, so an
+/// installer can stop a daemon of another version.
+#[cfg(windows)]
+pub async fn stop(name: &str) -> Stopped {
+    let client = match Client::connect(name, "installer", "stop", Arc::new(NullSink)).await {
+        Ok(c) => c,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Stopped::NotRunning,
+        Err(e) => {
+            vlog!("[stop] could not connect to {name}: {e}");
+            return Stopped::StillRunning;
+        }
+    };
+    client.shutdown(Duration::from_secs(3)).await;
+    drop(client);
+    if wait_gone(name).await {
+        Stopped::Stopped
+    } else {
+        Stopped::StillRunning
     }
 }
 
