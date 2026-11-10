@@ -24,7 +24,7 @@ overflow arrow.
 6. In that agent, try a prompt, Shift+Enter for a new line, pasting text,
    pasting an image, and Ctrl+C. Each one should work.
 
-Result: [            ]
+Result: **pass**
 
 ## 2. The tray
 
@@ -38,7 +38,7 @@ With an agent running and Veal closed with Keep running:
 4. With only idle shells (no agent), close Veal. There is no dialog and no icon.
 5. Does the icon look right at your display scaling? Is the tooltip text right?
 
-Result: [            ]
+Result: **pass**
 
 ## 3. Another Windows account cannot reach your shells (acceptance 14)
 
@@ -54,7 +54,7 @@ running.
 2. Expected: an "Access to the path is denied" error. Not expected: the command
    returning with no error, which means it connected.
 
-Result: [            ]
+Result: **not done (no second account)**
 
 ## 4. Sleep (acceptance 16)
 
@@ -63,23 +63,23 @@ Result: [            ]
 3. Type into the agent. It answers, and the pane is not showing "background
    service stopped". The agent pausing during sleep is expected.
 
-Result: [            ]
+Result: **pass**
 
 ## 5. Carried over from earlier plans
 
 1. **VS Code terminal:** run Veal from VS Code's terminal, then close that
    terminal. Veal and its panes keep working.
-   Result: [            ]
+   Result: **pass**
 2. **Console flash:** open 10 new panes one after another. Did any black
    console window flash up?
-   Result: [            ]
+   Result: **pass**
 3. **Three agents for 20 minutes (plan-15 A4):** three panes, each running
    `claude` on a task. After 20 minutes all three still respond and the window
    isn't sluggish.
-   Result: [            ]
+   Result: **pass**
 4. **Wheel scrolling (plan-15 A5):** in a `claude` pane with a long
    conversation, the mouse wheel scrolls its history smoothly.
-   Result: [            ]
+   Result: **pass**
 
 ## 6. A clean PC
 
@@ -90,7 +90,7 @@ On a PC or VM that has never had Veal, with Defender on:
 2. Open Veal and a pane. Did Defender flag, quarantine or noticeably slow down
    `veal-daemon.exe`? Look under Windows Security, then Protection history.
 
-Result: [            ]
+Result: **not done (no clean PC)**
 
 ## 7. Optional: the real update
 
@@ -98,4 +98,4 @@ This replaces your installed Veal. Update the installed v0.1.2 to the new
 version from its own update card. Afterwards your pinned projects and panes
 come back, and a `veal-daemon.exe` is running (in Task Manager, Details).
 
-Result: [            ]
+Result: **not done (optional; the real Veal is still 0.1.2)**

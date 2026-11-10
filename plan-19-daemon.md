@@ -6,8 +6,21 @@ plan-15 checks left for a person (below). Step 4 BUILT 2026-11-08. Step 5 BUILT
 2026-11-09, with three checks left for a person (below). Step 6 BUILT 2026-11-09,
 with the real-agent and tray-click checks left for a person (below). Step 7 BUILT
 2026-11-10, with a clean-machine check left for a person (below). Step 8: tasks
-8.1–8.5 DONE 2026-11-10. 8.6 waits on the person checks in `plan-19-checks.md`,
-the PR review, and the user's word to release.
+8.1–8.5 DONE 2026-11-10. 8.6: the person checks came back 2026-11-10 (below);
+the PR is open; the release waits on its review and the user's word.
+
+Person checks (`plan-19-checks.md`), on Veal Test 0.1.92, the same rebuilt
+candidate as 8.3:
+
+| Check | Result |
+|---|---|
+| 1. Agent keeps working while closed (acceptance 1, 2) | pass |
+| 2. The tray | pass |
+| 3. Another account cannot reach the pipe (acceptance 14) | not done: no second account. The pipe's DACL grants only the owner's SID, and the client checks the server's user (`core/src/pipe.rs`); not tried across accounts |
+| 4. Sleep (acceptance 16) | pass |
+| 5. VS Code terminal, console flash, three agents 20 min, wheel scrolling | pass, all four |
+| 6. Clean PC (SmartScreen, Defender) | not done: no clean PC. Open risk: SmartScreen or Defender on first install |
+| 7. Real update of the installed v0.1.2 (optional) | not done; 8.4 did it under the test identity, and 8.6.4 checks it after publishing |
 
 Results for 8: the acceptance tools are in `scripts/acceptance/`, now including
 `rows.ps1`, which runs every scriptable row against the installed test build (8.1).
