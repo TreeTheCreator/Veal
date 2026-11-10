@@ -9,6 +9,7 @@ import { homeDir } from "@tauri-apps/api/path";
 import { Logo } from "./Icon";
 import { AddProjectModal } from "./components/AddProjectModal";
 import { CloseGuard } from "./components/CloseGuard";
+import { DaemonMismatch } from "./components/DaemonMismatch";
 import { FilesView } from "./components/FilesView";
 import { NewTerminalButton } from "./components/NewTerminalButton";
 import { PaneLayout } from "./components/PaneLayout";
@@ -185,6 +186,7 @@ export default function App() {
 
       {adding && <AddProjectModal onClose={closeAdd} />}
       <CloseGuard />
+      <DaemonMismatch />
       <Toast />
       <UpdateCard />
     </div>
