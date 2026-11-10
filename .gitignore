@@ -25,3 +25,6 @@ dist-ssr
 
 # Veal per-project state
 .veal/
+
+# The daemon copied for bundling (scripts/build-daemon.mjs --sidecar)
+src-tauri/binaries/

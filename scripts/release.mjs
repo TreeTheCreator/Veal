@@ -46,7 +46,15 @@ const sigPath = join(dir, `${installer}.sig`);
 rmSync(sigPath, { force: true });
 
 console.log(`Building Veal ${version}…`);
-run("pnpm", ["tauri", "build"], process.platform === "win32");
+// `pnpm bundle` merges tauri.bundle.conf.json, which adds the daemon
+// (plan-19 7.1). A plain `tauri build` would ship an installer without it.
+run("pnpm", ["bundle"], process.platform === "win32");
+
+const nsi = "src-tauri/target/release/nsis/x64/installer.nsi";
+if (!existsSync(nsi) || !readFileSync(nsi, "utf8").includes("veal-daemon.exe")) {
+  console.error(`${nsi} does not install veal-daemon.exe; the installer would have no background service.`);
+  process.exit(1);
+}
 
 if (!existsSync(sigPath)) {
   console.error(`${sigPath} is missing; the build did not sign the installer.`);

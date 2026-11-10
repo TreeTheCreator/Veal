@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBuildCommand": "node scripts/build-daemon.mjs --release --sidecar && pnpm build"
+  },
+  "bundle": {
+    "externalBin": ["binaries/veal-daemon"],
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/hooks.nsh"
+      }
+    }
+  }
+}
