@@ -193,6 +193,32 @@ export function setCloseMode(keep: boolean): Promise<void> {
   return invoke("pty_close_mode", { keep });
 }
 
+/**
+ * Before an update installs: end every shell and the background service, and
+ * wait for it to go, since the installer replaces its exe (plan-19 7.4).
+ */
+export function shutdownDaemon(): Promise<boolean> {
+  return invoke<boolean>("pty_shutdown");
+}
+
+/**
+ * Sessions on a background service of another version, if Rust found one
+ * (plan-19 7.5). Asked on mount: the first connect happens before any listener.
+ */
+export function daemonMismatch(): Promise<number | null> {
+  return invoke<number | null>("pty_mismatch");
+}
+
+/** Fires when a connect finds a background service of another version. */
+export function onDaemonMismatch(cb: (sessions: number) => void): Promise<UnlistenFn> {
+  return listen<number>("pty-daemon-mismatch", (e) => cb(e.payload));
+}
+
+/** End the other version's service and its sessions; start this one's. */
+export function replaceDaemon(): Promise<void> {
+  return invoke("pty_replace_daemon");
+}
+
 /** One row of `pty_list`: what is running, whatever the page knows about. */
 export function listSessions(): Promise<SessionInfo[]> {
   return invoke<SessionInfo[]>("pty_list");
