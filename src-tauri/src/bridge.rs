@@ -274,6 +274,9 @@ pub struct Bridge {
     /// The close guard chose Keep running: closing detaches, not `shutdown`
     /// (plan-19 E3).
     keep_on_close: AtomicBool,
+    /// Sessions on a daemon of another protocol, from the last connect; the
+    /// mismatch prompt asks for it (plan-19 7.5).
+    mismatch: Mutex<Option<usize>>,
 }
 
 impl Bridge {
@@ -289,6 +292,7 @@ impl Bridge {
             next_app: AtomicU32::new(1),
             theme: Mutex::new(None),
             keep_on_close: AtomicBool::new(false),
+            mismatch: Mutex::new(None),
         }
     }
 
@@ -307,15 +311,37 @@ impl Bridge {
         if let Some(c) = self.current() {
             return Ok(c);
         }
+        self.connect(false).await
+    }
+
+    /// Connect, or with `replace` first stop a daemon of another version.
+    /// Called with `connecting` held.
+    async fn connect(&self, replace: bool) -> Result<Arc<Client>, String> {
         let app_exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let (exe, build) =
             client::daemon_exe(&app_exe, cfg!(debug_assertions)).map_err(|e| format!("background service: {e}"))?;
         let name = veal_core::pipe::pipe_name().map_err(|e| e.to_string())?;
         let generation = self.shared.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let sink = Arc::new(BridgeSink { shared: Arc::clone(&self.shared), generation });
-        let c = client::connect_or_launch(&name, &exe, &build, cfg!(debug_assertions), sink)
-            .await
-            .map_err(|e: StartError| e.to_string())?;
+        let debug = cfg!(debug_assertions);
+        let result = if replace {
+            client::replace(&name, &exe, &build, debug, sink).await
+        } else {
+            client::connect_or_launch(&name, &exe, &build, debug, sink).await
+        };
+        let c = match result {
+            Ok(c) => c,
+            Err(StartError::Mismatch { sessions }) => {
+                let first = self.mismatch.lock().unwrap().replace(sessions).is_none();
+                if first {
+                    vlog!("[bridge] daemon of another version with {sessions} sessions");
+                    let _ = self.shared.app.emit("pty-daemon-mismatch", sessions);
+                }
+                return Err(StartError::Mismatch { sessions }.to_string());
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        *self.mismatch.lock().unwrap() = None;
         let c = Arc::new(c);
         vlog!("[bridge] connected to daemon build {} ({} sessions)", c.daemon.build, c.daemon.sessions);
         if let Some((fg, bg)) = *self.theme.lock().unwrap() {
@@ -430,6 +456,18 @@ impl Bridge {
         }
     }
 
+    /// Sessions on a daemon of another version, if the last connect found one.
+    pub fn mismatch(&self) -> Option<usize> {
+        *self.mismatch.lock().unwrap()
+    }
+
+    /// The mismatch prompt's Restart: end the old daemon and its sessions, and
+    /// connect to this build's (plan-19 F6).
+    pub async fn replace_daemon(&self) -> Result<(), String> {
+        let _one = self.connecting.lock().await;
+        self.connect(true).await.map(|_| ())
+    }
+
     /// Set by the close guard just before the window goes.
     pub fn set_keep_on_close(&self, keep: bool) {
         self.keep_on_close.store(keep, Ordering::SeqCst);
@@ -445,6 +483,20 @@ impl Bridge {
             return;
         }
         self.shutdown().await;
+    }
+
+    /// End every shell and the daemon, and wait for it to go: an update is
+    /// about to replace its exe (plan-19 7.4). Whether it went.
+    pub async fn stop_for_update(&self) -> bool {
+        self.shutdown().await;
+        let Ok(name) = veal_core::pipe::pipe_name() else { return false };
+        match client::stop(&name).await {
+            client::Stopped::Stopped | client::Stopped::NotRunning => true,
+            client::Stopped::StillRunning => {
+                vlog!("[bridge] daemon still running before the update");
+                false
+            }
+        }
     }
 
     /// End every shell and the daemon.

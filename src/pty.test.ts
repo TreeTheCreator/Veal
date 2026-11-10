@@ -17,9 +17,10 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 
-const { killSession, listSessions, onDaemonLost, openPty, parseColor, resolveProxy, setCloseMode, setTheme } = await import("./pty");
+const { killSession, listSessions, onDaemonLost, openPty, parseColor, resolveProxy, setCloseMode, setTheme, shutdownDaemon, daemonMismatch, onDaemonMismatch, replaceDaemon } = await import("./pty");
 
 const fire = (name: string, payload: unknown) => events.get(name)!({ payload });
+const lastCommand = () => { const c = vi.mocked(invoke).mock.calls; return c[c.length - 1]?.[0]; };
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 const empty = () => new ArrayBuffer(0);
@@ -350,6 +351,31 @@ describe("closing (plan-19 6.3)", () => {
     await setCloseMode(true);
     expect(invoke).toHaveBeenCalledWith("pty_close_mode", { keep: true });
     expect(libRs).toMatch(/fn pty_close_mode\([^)]*keep: bool\)/);
+  });
+});
+
+describe("updating (plan-19 7.4)", () => {
+  it("sends pty_shutdown, which Rust takes with no arguments", async () => {
+    await shutdownDaemon();
+    expect(lastCommand()).toBe("pty_shutdown");
+    expect(libRs).toMatch(/fn pty_shutdown\(bridge: State<'_, Arc<Bridge>>\)/);
+  });
+});
+
+describe("the version-mismatch prompt (plan-19 7.5)", () => {
+  it("asks Rust with the commands it has, and hears its event", async () => {
+    await daemonMismatch();
+    expect(lastCommand()).toBe("pty_mismatch");
+    await replaceDaemon();
+    expect(lastCommand()).toBe("pty_replace_daemon");
+    expect(libRs).toMatch(/fn pty_mismatch\(bridge: State<'_, Arc<Bridge>>\) -> Option<usize>/);
+    expect(libRs).toMatch(/async fn pty_replace_daemon\(bridge: State<'_, Arc<Bridge>>\)/);
+    expect(libRs).toContain("pty_mismatch,");
+    expect(libRs).toContain("pty_replace_daemon,");
+    let got: number | null = null;
+    await onDaemonMismatch((n) => (got = n));
+    fire("pty-daemon-mismatch", 2);
+    expect(got).toBe(2);
   });
 });
 

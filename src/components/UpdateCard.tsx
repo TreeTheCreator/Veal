@@ -1,13 +1,14 @@
 // Update prompt. Checks the release feed once, a few seconds after launch;
 // offline or a missing feed is logged, not shown. Installing exits Veal (the
-// NSIS installer runs passively and relaunches it), so it warns first about
-// what the close guard would: unsaved edits and running agents.
+// NSIS installer runs passively and relaunches it) and stops the background
+// service (plan-19 7.4), so it warns first about unsaved edits and running
+// agents.
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { useEffect, useState } from "react";
 import { useFiles } from "../files/store";
 import { useLayout } from "../layout/store";
 import { runningAgents, useProjects } from "../projects/store";
-import { flushAll } from "./CloseGuard";
+import { installUpdate } from "../update";
 
 const CHECK_DELAY_MS = 5000;
 
@@ -22,8 +23,11 @@ function atStake(): string | null {
   const dirty = useFiles.getState().dirtyFiles().length;
   const { tree, agents } = useLayout.getState();
   const running = runningAgents(tree, useProjects.getState().projects, agents).length;
-  const parts = [dirty && `${plural(dirty, "file")} with unsaved edits`, running && `${plural(running, "running agent")}`].filter(Boolean);
-  return parts.length ? `Updating closes Veal: ${parts.join(" and ")} will be lost.` : null;
+  if (!dirty && !running) return null;
+  const parts = [];
+  if (running) parts.push(`Updating stops Veal's background service: ${plural(running, "running agent")} will end.`);
+  if (dirty) parts.push(`${plural(dirty, "file")} with unsaved edits will be lost.`);
+  return parts.join(" ");
 }
 
 export function UpdateCard() {
@@ -43,20 +47,8 @@ export function UpdateCard() {
   if (!update) return null;
 
   const install = async () => {
-    let total = 0;
-    let got = 0;
-    setPhase({ kind: "busy", label: "Downloading…" });
     try {
-      await update.download((e) => {
-        if (e.event === "Started") total = e.data.contentLength ?? 0;
-        if (e.event === "Progress" && total) {
-          got += e.data.chunkLength;
-          setPhase({ kind: "busy", label: `Downloading… ${Math.round((got / total) * 100)}%` });
-        }
-      });
-      setPhase({ kind: "busy", label: "Installing…" });
-      await flushAll();
-      await update.install();
+      await installUpdate(update, (label) => setPhase({ kind: "busy", label }));
     } catch (e) {
       console.error("update install", e);
       setPhase({ kind: "error", message: String(e) });

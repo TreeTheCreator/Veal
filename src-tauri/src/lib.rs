@@ -135,6 +135,27 @@ fn pty_close_mode(bridge: State<'_, Arc<Bridge>>, keep: bool) {
     bridge.set_keep_on_close(keep);
 }
 
+/// An update is about to install: end every shell and the daemon, and wait
+/// for it to go. Whether it went (plan-19 7.4).
+#[tauri::command(async)]
+async fn pty_shutdown(bridge: State<'_, Arc<Bridge>>) -> Result<bool, String> {
+    Ok(bridge.stop_for_update().await)
+}
+
+/// Sessions on a background service of another version, if one was found
+/// (plan-19 7.5). The prompt asks on mount, since the first connect is made
+/// before the page listens for `pty-daemon-mismatch`.
+#[tauri::command(async)]
+fn pty_mismatch(bridge: State<'_, Arc<Bridge>>) -> Option<usize> {
+    bridge.mismatch()
+}
+
+/// The mismatch prompt's Restart: end the old service and its sessions.
+#[tauri::command(async)]
+async fn pty_replace_daemon(bridge: State<'_, Arc<Bridge>>) -> Result<(), String> {
+    bridge.replace_daemon().await
+}
+
 /// The terminal colours, for OSC 10/11 answers while no window is attached.
 #[tauri::command(async)]
 fn pty_theme(bridge: State<'_, Arc<Bridge>>, fg: (u8, u8, u8), bg: (u8, u8, u8)) {
@@ -394,6 +415,9 @@ pub fn run() {
             pty_kill,
             pty_theme,
             pty_close_mode,
+            pty_shutdown,
+            pty_mismatch,
+            pty_replace_daemon,
             proxy_resolve,
             projects_list,
             projects_add,
