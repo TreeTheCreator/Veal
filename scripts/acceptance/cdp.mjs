@@ -23,8 +23,9 @@ if (cmd === "eval") console.log(JSON.stringify(await evaluate(rest.join(" "))));
 if (cmd === "type") {
   const [idx, ...text] = rest;
   await evaluate(`document.querySelectorAll('.pane-term textarea')[${idx}].focus()`);
-  const t = text.join(" ").replace(/\\r/g, "\r");
-  await send("Input.insertText", { text: t });
+  // Literal: Enter is `enter` and Ctrl+C is `ctrlc`, so a `\r` in a Windows
+  // path stays as typed.
+  await send("Input.insertText", { text: text.join(" ") });
 }
 if (cmd === "enter") {
   await evaluate(`document.querySelectorAll('.pane-term textarea')[${rest[0]}].focus()`);
